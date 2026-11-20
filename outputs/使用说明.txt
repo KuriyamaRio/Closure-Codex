@@ -1,0 +1,15 @@
+可露希尔 · Codex Windows 移植
+
+1. 打开 Codex 的「设置 → 外观 → 高级」，打开分别设置深浅模式。把 closure-theme 目录里对应的主题文件整行粘贴到「导入主题」。两套主题可以分别保存。详细路径见 closure-theme/README.md。
+2. 使用原来的 Codex 图标启动联动。Codex 位于前台时，显示 CRT 扫描线、暗角和桌宠。切到其他应用或最小化 Codex 时，效果自动隐藏。联动模式无托盘图标，右键点击角色可打开桌宠设置。扫描线和暗角默认跟随 Windows 应用颜色。
+3. 联动桌宠在本机读取 Codex 活动和有效额度，自动播放处理、输出、完成和失败等反馈。点击角色可显示气泡和有效额度贴画。解除联动后，可双击 Start-Closure.cmd 手动启动，或双击 closure-companion/launch-with-activity.cmd 手动启动带活动反馈的桌宠。
+
+closure-companion 使用原版 Spine 3.8、交互动作、像素气泡和音效。额度、花费和峰谷价按各自服务的口径计算，原 DSH 的人民币账单无法沿用。
+
+启动脚本使用当前工作区 work/companion-runtime 中的 Electron 运行时。请保留 outputs 和 work 的相对位置。恢复外观可在 Codex 的各深浅模式中重新导入先前复制的主题。手动启动时可用各自的托盘菜单调节和退出。
+
+Windows 启动联动启用后，可以直接用原来的 Codex 图标。两个助手随主窗口启动，关闭最后一个主窗口后约两秒退出。最小化时保持运行并隐藏。可以双击 closure-autostart/Disable-Codex-Link.cmd 解除联动，也可以用同目录的 Enable-Codex-Link.cmd 重新启用。启动项引用当前工作区路径，移动工作区后请从新位置重新启用。
+
+closure-pet 内提供原生桌宠格式和 preview.gif。检测到当前 Windows 客户端有本地桌宠的自动云迁移逻辑，因此游戏素材只留在本项目目录，日常使用离线伴侣。精灵表、预览、模型和音效仅供本机自用，请勿上传或二次分发。
+
+Codex 原生主题以颜色、对比度和字体为主。原项目替换整套应用图标、顶栏字标和渐变场景的做法依赖 DSH 页面结构。本版通过独立窗口恢复扫描线、暗角和原版桌宠。
