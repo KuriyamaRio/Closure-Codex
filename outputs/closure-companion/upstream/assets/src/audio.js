@@ -5,6 +5,7 @@
 // 依赖注入：getSettings() 返回 { sound, volume }，避免模块直接耦合设置对象。
 
 import { PREFIX } from './core/env.js'
+import { voiceLanguageFor } from './core/dialogue.js'
 
 var SOUND_FILES = ['click', 'fail', 'coin', 'turnfail']
 
@@ -17,6 +18,8 @@ export function createAudio(getSettings) {
   let voiceSource
   let voiceGain
   let voiceId
+  let playingLanguage
+  let previewing = false
   let voiceRequest = 0
 
   function audioEnsure() {
@@ -74,7 +77,8 @@ export function createAudio(getSettings) {
     }
     if (!voiceBuffers.has(id)) {
       const buffers = voiceBuffers
-      buffers.set(id, fetch(PREFIX + '/assets/audio/voice/' + language + '/' + id + '.ogg')
+      const clipLanguage = voiceLanguageFor(id, language)
+      buffers.set(id, fetch(PREFIX + '/assets/audio/voice/' + clipLanguage + '/' + id + '.ogg')
         .then((response) => {
           if (!response.ok) throw new Error(String(response.status))
           return response.arrayBuffer()
@@ -85,26 +89,25 @@ export function createAudio(getSettings) {
     return voiceBuffers.get(id)
   }
 
-  function preloadVoices(ids) {
-    const settings = getSettings()
-    if (!settings.voice) return
-    const ctx = audioEnsure()
-    if (ctx) for (const id of ids) loadVoice(id, settings.voiceLanguage, ctx)
-  }
-
   function stopVoice() {
     voiceRequest++
     if (voiceSource) voiceSource.stop()
     voiceSource = null
     voiceId = null
+    previewing = false
   }
 
-  async function playVoice(id, onStart) {
+  function stopPreview() {
+    if (previewing) stopVoice()
+  }
+
+  async function playVoice(id, onStart, preview = false) {
     stopVoice()
     const { voice, voiceLanguage: language } = getSettings()
     if (!voice || document.hidden) return
     const ctx = audioEnsure()
     if (!ctx) return
+    previewing = preview
     const request = voiceRequest
     const buffer = await loadVoice(id, language, ctx)
     if (ctx.state === 'suspended') await ctx.resume().catch(() => {})
@@ -124,12 +127,15 @@ export function createAudio(getSettings) {
       if (voiceSource === source) {
         voiceSource = null
         voiceId = null
+        previewing = false
       }
     }
     source.start()
     voiceSource = source
     voiceId = id
-    onStart(buffer.duration * 1000)
+    playingLanguage = voiceLanguageFor(id, language)
+    onStart?.(buffer.duration * 1000)
+    return true
   }
 
   function setVoiceVolume() {
@@ -137,7 +143,7 @@ export function createAudio(getSettings) {
   }
 
   function getVoiceState() {
-    return voiceId ? { id: voiceId, language: voiceLanguage, volume: voiceGain.gain.value } : null
+    return voiceId ? { id: voiceId, language: playingLanguage, volume: voiceGain.gain.value } : null
   }
 
   /** 调试面用：报告已加载的音频与当前上下文状态。 */
@@ -148,5 +154,5 @@ export function createAudio(getSettings) {
     return { loaded: out, ctx: audioCtx ? audioCtx.state : null, enabled: s.sound, volume: s.volume }
   }
 
-  return { ensure: audioEnsure, loadSounds, playSound, preloadVoices, playVoice, stopVoice, setVoiceVolume, getVoiceState, getState }
+  return { ensure: audioEnsure, loadSounds, playSound, playVoice, stopVoice, stopPreview, setVoiceVolume, getVoiceState, getState }
 }

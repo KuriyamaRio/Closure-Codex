@@ -227,71 +227,160 @@ async function runSmoke(win) {
       }
       return false
     }
-    pet.showBubble('测试事件气泡')
-    const clickWithRandom = (value) => {
-      const random = Math.random
-      try {
-        Math.random = () => value
-        click()
-      } finally {
-        Math.random = random
-      }
-    }
-    clickWithRandom(0)
-    await new Promise((done) => setTimeout(done, 650))
+    const quota = [{ minutes: 300, remaining: 85.5 }]
+    const tokenUsage = { total: 12480, turn: 900 }
+    const state = (mode = 'idle', turnStartSeq = 0, seq = 0, kind = 'completed') => ({
+      closureCompanion: { source: 'official', quota, credits: { balance: '3.25' }, tokenUsage },
+      work: { mode, active: mode !== 'idle' },
+      turnStartSeq, turnEnd: { seq, kind },
+    })
+    pet.applyState(state())
+    click()
     const bubble = document.querySelector('#dsh-closure-pet-bubble')
-    const clicked = bubble.style.opacity === '1'
-    const bubbleText = bubble.textContent
-    const dialogueCues = ['黑眼圈', '烧烤味饼干', '不许砍价']
-    const idleDialogueCount = dialogueCues.length
-    const idleLines = [bubbleText]
-    for (let i = 1; i < idleDialogueCount; i++) {
-      click()
-      idleLines.push(bubble.textContent)
+    const bubbleText = () => bubble.textContent.replace(/\\s+/g, '')
+    const clicked = bubble.style.opacity === '1' && bubbleText().includes('不许砍价') &&
+      !bubbleText().includes('85.5%') && !bubbleText().includes('Token') &&
+      await waitFor(() => pet.voice?.id === 'a02')
+    pet.applyState({ ...state(), userInput: { seq: 1, scene: 'question' } })
+    const questionVoice = await waitFor(() => pet.voice?.id === 'b10') && bubbleText().includes('有晋升的机会')
+    const answerVoices = []
+    for (const [index, id] of ['b12', 'b13', 'b14', 'b15', 'b12'].entries()) {
+      pet.applyState({ ...state(), userInput: { seq: index + 2, scene: 'answer' } })
+      answerVoices.push(await waitFor(() => pet.voice?.id === id))
     }
-    // This would repeat the last line without the boundary check.
-    clickWithRandom(0.5)
-    const secondRound = [bubble.textContent]
-    for (let i = 1; i < idleDialogueCount; i++) {
-      click()
-      secondRound.push(bubble.textContent)
-    }
-    const dialogueCycles = new Set(idleLines).size === idleDialogueCount &&
-      dialogueCues.every((cue) => idleLines.some((line) => line.replace(/\\s+/g, '').includes(cue))) &&
-      new Set(secondRound).size === idleDialogueCount && secondRound.every((line) => idleLines.includes(line)) &&
-      idleLines.at(-1) !== secondRound[0]
-    const lineBeforeRefresh = bubble.textContent
-    await new Promise((done) => setTimeout(done, 1100))
-    const dialogueSurvivesRefresh = bubble.textContent === lineBeforeRefresh
+    const answerRotation = answerVoices.every(Boolean)
+    pet.hideBubble()
     document.dispatchEvent(new MouseEvent('contextmenu', { clientX: point.x, clientY: point.y, cancelable: true }))
     const settings = document.querySelector('#dsh-closure-pet-settings')
     const panelOpened = getComputedStyle(settings).display === 'block'
     const notification = [...settings.querySelectorAll('details')].find((item) => item.querySelector('summary').textContent === '提醒与播报')
     notification.open = true
-    const quotaOption = notification.querySelector('button[data-minutes="5"]')
+    const quotaOption = notification.querySelector('button[data-minutes="0"]')
     quotaOption.click()
-    for (const control of notification.querySelectorAll('input[type=checkbox]')) control.click()
-    const notificationSettings = JSON.parse(localStorage.getItem('dshcl-settings'))
+    const toolNotice = notification.querySelector('input[type=checkbox]')
+    toolNotice.click()
+    const getSavedSettings = () => JSON.parse(localStorage.getItem('dshcl-settings'))
     const notificationsSaved = quotaOption.getAttribute('aria-pressed') === 'true' &&
-      notificationSettings.quotaReminderMinutes === 5 && !notificationSettings.startupVoice &&
-      !notificationSettings.completionVoice && !notificationSettings.toolFailureNotice
+      getSavedSettings().quotaReminderMinutes === 0 && !getSavedSettings().toolFailureNotice
+
+    const editor = settings.querySelector('#dsh-closure-voice-queues')
+    editor.querySelector('summary').click()
+    const defaultMode = editor.querySelector('[data-queue-mode="default"]')
+    const personalMode = editor.querySelector('[data-queue-mode="personal"]')
+    const scenes = [...editor.querySelectorAll('[data-scene]')]
+    const selectScene = (scene) => editor.querySelector('[data-scene="' + scene + '"]').click()
+    const add = (id) => editor.querySelector('[data-add-voice="' + id + '"]').click()
+    const remove = (id) => editor.querySelector('[data-queued-voice="' + id + '"] button:last-child').click()
+    const list = () => [...editor.querySelectorAll('[data-queued-voice]')].map((row) => row.dataset.queuedVoice)
+    const visibleClips = () => editor.querySelectorAll('[data-clip]:not([hidden])').length
+    const expectedQueues = {
+      start: 'a18,a19,a21,a23,a24',
+      working: 'a02,a03,a04,a07,a08,a09,a11,a12,a20,a22,a25,a28,a33,a34,a36,a42,a06,a13,a14,b08',
+      completion: 'a01,a05,a17,a29,a30,a44,b01,b02,b03,b04,b05,b07,b09,b18',
+      startup: 'a37', idle: 'a10,b16', toolFailure: 'a31,a32',
+      question: 'b10', answer: 'b12,b13,b14,b15',
+    }
+    const defaultQueues = await waitFor(() => defaultMode.getAttribute('aria-pressed') === 'true') &&
+      scenes.length === Object.keys(expectedQueues).length && scenes.every((tab) => {
+      tab.click()
+      return list().join() === expectedQueues[tab.dataset.scene]
+    })
+    const fullCatalog = visibleClips() === 57
+    editor.querySelector('[data-group="b"]').click()
+    const filterWorks = visibleClips() === 19
+    editor.querySelector('[data-group=""]').click()
+    personalMode.click()
+    const emptyPersonalQueues = scenes.every((tab) => {
+      tab.click()
+      return list().length === 0
+    })
+    selectScene('start')
+    defaultMode.click()
+    pet.applyState(state('thinking', 1))
+    const defaultOverridesPersonal = list().join() === expectedQueues.start &&
+      getSavedSettings().voiceQueues.start.length === 0 &&
+      editor.querySelector('[data-add-voice="a01"]').disabled &&
+      await waitFor(() => pet.voice?.id === 'a18')
+    personalMode.click()
+    pet.hideBubble()
+    pet.applyState(state())
+    pet.applyState(state('thinking', 1))
+    const emptyDoesNotSpeak = !pet.voice && bubble.style.opacity === '0'
+
+    selectScene('start')
+    add('a18')
+    add('a19')
+    add('a01')
+    editor.querySelector('[data-queued-voice="a19"] button').click()
+    const ordered = list().join() === 'a19,a18,a01'
+    remove('a01')
+    for (const [scene, clip] of Object.entries({ working: 'a23', completion: 'a30', startup: 'b01', idle: 'b03' })) {
+      selectScene(scene)
+      for (const id of list()) remove(id)
+      add(clip)
+    }
+    selectScene('working')
+    add('a34')
+    selectScene('start')
+    const savedQueues = getSavedSettings().voiceQueues
+    const queueEditor = fullCatalog && filterWorks && emptyPersonalQueues && emptyDoesNotSpeak && ordered &&
+      list().join() === 'a19,a18' && !editor.querySelector('[data-add-voice="a01"]').disabled &&
+      editor.querySelector('[data-add-voice="a19"]').disabled &&
+      savedQueues.start.join() === 'a19,a18' && savedQueues.working.join() === 'a23,a34' &&
+      savedQueues.completion.join() === 'a30' && savedQueues.startup.join() === 'b01' && savedQueues.idle.join() === 'b03'
+
     const voiceControl = settings.querySelector('[aria-label="角色配音"]')
     const voiceLanguages = [...settings.querySelectorAll('button[data-voice-language]')]
     const defaultVoice = voiceControl.checked && voiceLanguages.find(
       (button) => button.getAttribute('aria-pressed') === 'true')?.dataset.voiceLanguage === 'zh'
+    const toolState = (fail) => ({
+      ...state('idle', 1),
+      tools: { ok: 0, fail, lastFailName: 'web.search', lastFailReason: '请求频率或额度受限（HTTP 429）' },
+    })
+    pet.play('Idle', true)
+    pet.hideBubble()
+    pet.applyState(toolState(0))
+    pet.applyState(toolState(1))
+    const disabledToolNotice = bubble.style.opacity === '0' && !pet.voice
+    toolNotice.click()
+    defaultMode.click()
+    let toolVoice, toolVoiceRotates, toolTextWithoutVoice
+    const clock = Date.now
+    try {
+      const base = clock()
+      Date.now = () => base
+      pet.applyState(toolState(2))
+      toolVoice = await waitFor(() => pet.voice?.id === 'a31') &&
+        bubbleText().includes('web.search报错了') && bubbleText().includes('HTTP429') && bubbleText().includes('追踪设备')
+      if (!toolVoice) throw new Error(JSON.stringify({ voice: pet.voice, text: bubbleText(), layers: pet.layers,
+        enabled: toolNotice.checked, audioEnabled: voiceControl.checked, hidden: document.hidden, saved: getSavedSettings().voiceQueues.toolFailure }))
+      Date.now = () => base + 1500
+      pet.play('Idle', true)
+      pet.applyState(toolState(3))
+      toolVoiceRotates = await waitFor(() => pet.voice?.id === 'a32') && bubbleText().includes('挂钩释放')
+      personalMode.click()
+      Date.now = () => base + 3000
+      pet.play('Idle', true)
+      pet.applyState(toolState(4))
+      toolTextWithoutVoice = !pet.voice && bubbleText().includes('HTTP429') && !bubbleText().includes('挂钩释放')
+    } finally {
+      Date.now = clock
+    }
+    toolNotice.click()
+    pet.hideBubble()
+    pet.play('Idle', true)
+    selectScene('start')
+
+    const listen = (id) => editor.querySelector('[data-clip="' + id + '"] button').click()
     let voicesPlayed = 0
     for (const button of voiceLanguages) {
-      pet.openPanel()
       button.click()
       if (pet.voice) throw new Error('Changing voice language left the previous line playing')
-      pet.closePanel()
-      click(hitPoint())
+      listen('a18')
       if (await waitFor(() => pet.voice?.language === button.dataset.voiceLanguage)) voicesPlayed++
     }
-    const previousVoice = pet.voice?.id
-    click(hitPoint())
-    const interruptedVoice = await waitFor(() => pet.voice?.language === 'ko' && pet.voice.id !== previousVoice)
-    pet.openPanel()
+    listen('b01')
+    const languageFallback = await waitFor(() => pet.voice?.language === 'zh' && pet.voice.id === 'b01')
     const voiceVolume = settings.querySelector('input[aria-label="配音音量"]')
     const effectsVolume = settings.querySelector('input[aria-label="音效音量"]')
     const setVolume = (slider, value) => {
@@ -305,19 +394,25 @@ async function runSmoke(win) {
     const liveVoiceVolume = pet.voice?.volume === 0.25 && pet.sounds.volume === effectsBefore
     setVolume(effectsVolume, '0.5')
     const separateVolumes = pet.sounds.volume === 0.5 && pet.voice?.volume === 0.25
-    voiceControl.click()
-    const stoppedImmediately = !pet.voice
     pet.closePanel()
-    click(hitPoint())
-    await new Promise((done) => setTimeout(done, 150))
-    const savedSettings = JSON.parse(localStorage.getItem('dshcl-settings'))
+    const previewStops = !pet.voice
     const voiceVolumeWorks = mutedVoice && liveVoiceVolume && separateVolumes &&
-      savedSettings?.voiceVolume === 0.25 && savedSettings?.volume === 0.5
-    const voiceSettings = defaultVoice && voicesPlayed === 4 && interruptedVoice && stoppedImmediately && !pet.voice &&
-      !voiceControl.checked && savedSettings?.voice === false && savedSettings?.voiceLanguage === 'ko'
+      getSavedSettings().voiceVolume === 0.25 && getSavedSettings().volume === 0.5
+    pet.applyState(state('thinking', 2))
+    const startVoice = await waitFor(() => pet.voice?.id === 'a19' && pet.voice.language === 'ko')
+    const startText = bubbleText()
+    click(hitPoint())
+    const clickKeepsDialogue = bubbleText() === startText && pet.voice?.id === 'a19'
+    pet.applyState(state('thinking', 3))
+    const startRotates = await waitFor(() => pet.voice?.id === 'a18')
     pet.openPanel()
+    voiceControl.click()
+    const voiceSettings = defaultVoice && voicesPlayed === 4 && languageFallback && previewStops && !pet.voice &&
+      !voiceControl.checked && getSavedSettings().voice === false && getSavedSettings().voiceLanguage === 'ko'
+    editor.open = false
     const startupScheduled = pet.startup.pending
-    settings.querySelector('details').open = true
+    const expressions = [...settings.querySelectorAll('details')].find((item) => item.querySelector('summary').textContent === '预览表情')
+    expressions.open = true
     const previewButton = [...settings.querySelectorAll('details button')].find((button) => button.textContent === '哭脸')
     previewButton.click()
     const expressionPreview = pet.animation === 'Sad_Begin' && getComputedStyle(settings).display === 'none'
@@ -343,55 +438,114 @@ async function runSmoke(win) {
     })
     pet.closePanel()
     pet.play('Idle', true)
-    const quota = [{ minutes: 300, remaining: 85.5 }]
-    pet.applyState({ closureCompanion: { quota }, work: { mode: 'thinking' } })
-    const thinking = pet.layers.work === 'Special_B'
-    pet.applyState({ closureCompanion: { quota }, work: { mode: 'outputting' } })
-    const talking = pet.layers.work === 'Talk'
-    click(hitPoint())
-    const workText = bubble.textContent.replace(/\\s+/g, '')
-    const workDialogueWithQuota = ['我还在算', '巧克力'].some((cue) => workText.includes(cue)) && workText.includes('85.5%')
-    const tokenUsage = { total: 12480, turn: 900 }
-    pet.applyState({ closureCompanion: { source: 'thirdParty', balance: { remaining: 120.5, unit: 'USD' }, quota: [], tokenUsage }, work: { mode: 'idle' } })
-    const hasBalanceInRotation = Array.from({ length: 8 }, () => {
-      click(hitPoint())
-      const text = bubble.textContent.replace(/\\s+/g, '')
-      return text.includes('喏，博士，这次的用量在这儿。') && text.includes('账户余额120.50USD') &&
-        text.includes('这段对话共用了12,480Token') && text.includes('这轮用了900Token')
-    }).filter(Boolean).length === 1
-    pet.applyState({ closureCompanion: { quota }, work: { mode: 'idle' } })
     const now = Date.now
-    let idleLineAfterFiveMinutes
+    let workingDialogue, workingOnlyOnce, idleDialogue, idleOnlyOnce, completionDialogue, failedTurnSkipsCompletion
+    let elapsed = 0
     try {
-      Date.now = () => now() + 300001
-      idleLineAfterFiveMinutes = Array.from({ length: 3 }, () => {
-        click(hitPoint())
-        return bubble.textContent.replace(/\\s+/g, '')
-      }).some((line) => line.includes('博士睡了'))
+      const base = now()
+      Date.now = () => base + elapsed
+      pet.hideBubble()
+      pet.applyState(state('thinking', 4))
+      const thinking = pet.layers.work === 'Special_B'
+      pet.applyState(state('outputting', 4))
+      if (!thinking || pet.layers.work !== 'Talk') throw new Error('Work animations did not follow activity')
+      pet.hideBubble()
+      elapsed = 14_999
+      pet.applyState(state('thinking', 4))
+      const noEarlyWorking = bubble.style.opacity === '0'
+      elapsed++
+      pet.applyState(state('thinking', 4))
+      workingDialogue = noEarlyWorking && bubbleText().includes('零号油罐')
+      pet.hideBubble()
+      elapsed += 1_000
+      pet.applyState(state('thinking', 4))
+      workingOnlyOnce = bubble.style.opacity === '0'
+
+      pet.applyState(state('idle', 4, 1))
+      const text = bubbleText()
+      completionDialogue = text.includes('奖励一下') && !text.includes('3.25') &&
+        !text.includes('85.5%') && !text.includes('Token')
+      pet.hideBubble()
+      pet.applyState(state('idle', 4, 2, 'error'))
+      failedTurnSkipsCompletion = bubble.style.opacity === '0' || !bubbleText().includes('奖励一下')
+      pet.hideBubble()
+      elapsed += 299_999
+      pet.applyState(state('idle', 4, 2))
+      const noEarlyIdle = bubble.style.opacity === '0'
+      elapsed++
+      pet.applyState(state('idle', 4, 2))
+      idleDialogue = noEarlyIdle && bubbleText().includes('辅助就交给我吧')
+      pet.hideBubble()
+      elapsed += 1_000
+      pet.applyState(state('idle', 4, 2))
+      idleOnlyOnce = bubble.style.opacity === '0'
     } finally {
       Date.now = now
     }
-    pet.play('Idle', true)
-    pet.applyState({ closureCompanion: { source: 'official', quota, credits: { balance: '3.25' }, tokenUsage, completed: true }, work: { mode: 'idle' }, turnEnd: { seq: 1, kind: 'completed' } })
-    const completionText = bubble.textContent.replace(/\\s+/g, '')
-    const completionDialogue = completionText.includes('奖励一下') && completionText.includes('5小时额度还剩85.5%') &&
-      completionText.includes('ChatGPT积分还剩3.25') && completionText.includes('这轮用了900Token')
-    pet.applyState({ closureCompanion: { quota }, work: { mode: 'outputting' } })
-    pet.showValleySticker()
-    const sticker = document.querySelector('#dsh-closure-pet-sticker canvas')
-    const stickerPainted = Boolean(sticker?.getContext('2d').getImageData(20, 20, 1, 1).data[3])
-    return { dragged, clicked, panelOpened, notificationsSaved, voiceSettings, voiceVolumeWorks, voicesPlayed, expressionPreview, crtSettingsSaved, startupScheduled, thinking, talking, stickerPainted, dialogueCycles,
-      dialogueSurvivesRefresh, workDialogueWithQuota, hasBalanceInRotation, idleLineAfterFiveMinutes, completionDialogue, completionText, bubbleText, workText, animations: pet.animations, sounds: pet.sounds }
+    pet.hideBubble()
+    pet.runStartup()
+    const startupDialogue = bubbleText().includes('模拟正式开始')
+    pet.hideBubble()
+    const balanceState = {
+      ...state('idle', 4, 2),
+      closureCompanion: { source: 'thirdParty', balance: { remaining: 120.5, unit: 'USD' }, quota: [], tokenUsage },
+    }
+    pet.applyState(balanceState)
+    click(hitPoint())
+    const text = bubbleText()
+    const noQuotaOnClick = !text.includes('账户余额') && !text.includes('Token')
+    const clickSharesWorkingQueue = text.includes('别急，我还在算呢。')
+    voiceControl.click()
+    click(hitPoint())
+    const interactionRotates = await waitFor(() => pet.voice?.id === 'a23')
+    pet.hideBubble()
+    let automaticQuota, noQuotaSticker
+    try {
+      const base = now()
+      Date.now = () => base + 60_000
+      pet.applyState(balanceState)
+      const reminderOff = bubble.style.opacity === '0'
+      notification.querySelector('button[data-minutes="1"]').click()
+      pet.applyState(balanceState)
+      const quotaText = bubbleText()
+      automaticQuota = reminderOff && bubble.style.opacity === '1' &&
+        quotaText.includes('账户余额120.50USD') &&
+        quotaText.includes('这段对话共用了12,480Token') && quotaText.includes('这轮用了900Token')
+      pet.applyState(state('idle', 4, 2))
+      pet.showValleySticker()
+      noQuotaSticker = !document.querySelector('#dsh-closure-pet-sticker')
+    } finally {
+      Date.now = now
+    }
+    defaultMode.click()
+    return { dragged, clicked, panelOpened, notificationsSaved, defaultQueues, defaultOverridesPersonal, queueEditor, voiceSettings, voiceVolumeWorks,
+      startVoice, clickKeepsDialogue, startRotates, expressionPreview, crtSettingsSaved, startupScheduled,
+      workingDialogue, workingOnlyOnce, completionDialogue, failedTurnSkipsCompletion, idleDialogue, idleOnlyOnce,
+      startupDialogue, noQuotaOnClick, automaticQuota, noQuotaSticker, clickSharesWorkingQueue, interactionRotates,
+      questionVoice, answerRotation,
+      disabledToolNotice, toolVoice, toolVoiceRotates, toolTextWithoutVoice }
   })()`)
-  if (!result.dragged || !result.clicked || !result.panelOpened || !result.notificationsSaved || !result.voiceSettings || !result.voiceVolumeWorks || !result.expressionPreview || !result.crtSettingsSaved || !result.startupScheduled || !result.thinking ||
-      !result.talking || !result.stickerPainted || !result.dialogueCycles || !result.dialogueSurvivesRefresh || !result.workDialogueWithQuota ||
-      !result.hasBalanceInRotation || !result.idleLineAfterFiveMinutes || !result.completionDialogue) {
+  if (!Object.values(result).every(Boolean)) {
     throw new Error(`Interaction check failed: ${JSON.stringify(result)}`)
   }
   const preview = await win.webContents.capturePage()
   if (preview.isEmpty()) throw new Error('Spine render is empty.')
   if (process.env.CLOSURE_SMOKE_PNG) await writeFile(process.env.CLOSURE_SMOKE_PNG, preview.toPNG())
-  console.log(JSON.stringify(result))
+  await win.loadURL(win.webContents.getURL())
+  const queuesReloaded = await evaluate(`(async () => {
+    const { settings } = await import('/dsh-closure/assets/src/core/settings.js')
+    const { getVoiceQueues, normalizeSettings } = await import('/dsh-closure/assets/src/shared/protocol.js')
+    const queues = settings.voiceQueues
+    const oldProfile = normalizeSettings({ voiceQueues: { start: [] } })
+    return queues.start.join() === 'a19,a18' && queues.working.join() === 'a23,a34' &&
+      queues.completion.join() === 'a30' && queues.startup.join() === 'b01' && queues.idle.join() === 'b03' &&
+      queues.toolFailure.length === 0 && settings.voiceQueueMode === 'default' &&
+      getVoiceQueues(settings).start.join() === 'a18,a19,a21,a23,a24' &&
+      getVoiceQueues(settings).toolFailure.join() === 'a31,a32' &&
+      Object.values(oldProfile.voiceQueues).every((queue) => queue.length === 0) && getVoiceQueues(oldProfile).start[0] === 'a18'
+  })()`)
+  if (!queuesReloaded) throw new Error('Voice queues did not survive reload.')
+  console.log(JSON.stringify({ ...result, queuesReloaded }))
 }
 
 if (!smoke && !app.requestSingleInstanceLock()) {

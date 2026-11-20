@@ -6,6 +6,7 @@
 
 import { PREFIX, SIZE_MIN, SIZE_MAX } from '../core/env.js'
 import { VOICE_LANGUAGES } from '../shared/protocol.js'
+import { createVoiceQueues } from './voice-queues.js'
 
 export function createPanel(deps) {
   var settings = deps.settings
@@ -197,6 +198,7 @@ export function createPanel(deps) {
     soundRow.appendChild(soundWrap)
 
     const voiceRow = row('角色配音')
+    const voiceQueues = createVoiceQueues({ ...deps, positionPanel })
     const voiceSwitch = document.createElement('input')
     voiceSwitch.type = 'checkbox'
     voiceSwitch.checked = settings.voice
@@ -205,6 +207,7 @@ export function createPanel(deps) {
       settings.voice = voiceSwitch.checked
       saveSettings(true)
       deps.updateVoice()
+      if (voiceQueues.menu.open) voiceQueues.refresh()
     })
     voiceRow.appendChild(voiceSwitch)
     row('配音音量').appendChild(volumeControl('配音音量', 'voiceVolume', deps.setVoiceVolume))
@@ -237,6 +240,7 @@ export function createPanel(deps) {
     }
     languageRow.appendChild(languageGroup)
     syncVoiceLanguage()
+    panel.appendChild(voiceQueues.menu)
 
     const previews = document.createElement('details')
     previews.style.cssText = 'margin-top:8px;border-top:1px solid #444958;padding-top:5px'
@@ -380,7 +384,9 @@ export function createPanel(deps) {
       quotaRow.appendChild(options)
       notifications.appendChild(quotaRow)
 
-      for (const [key, label] of [['startupVoice', '开场配音'], ['completionVoice', '任务完成配音'], ['toolFailureNotice', '工具失败提示']]) {
+      {
+        const key = 'toolFailureNotice'
+        const label = '工具失败提示'
         const settingRow = row(label)
         const checkbox = document.createElement('input')
         checkbox.type = 'checkbox'
@@ -414,7 +420,7 @@ export function createPanel(deps) {
 
     document.body.appendChild(panel)
     syncMirrorButtons()
-    return { syncMirrorButtons: syncMirrorButtons, slider: slider, sizeText: sizeText }
+    return { syncMirrorButtons, slider, sizeText, voiceQueues }
   }
 
   var panelApi = null
@@ -426,6 +432,7 @@ export function createPanel(deps) {
       panelApi.syncMirrorButtons()
     }
     panel.style.display = 'block'
+    if (panelApi.voiceQueues.menu.open) panelApi.voiceQueues.refresh()
     positionPanel()
   }
 
@@ -444,6 +451,7 @@ export function createPanel(deps) {
 
   function closePanel() {
     if (panel) panel.style.display = 'none'
+    deps.stopVoicePreview()
   }
 
   function insidePanel(target) {

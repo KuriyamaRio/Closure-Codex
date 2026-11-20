@@ -33,11 +33,16 @@ test('tool and turn failure reasons reach the desktop notification', async (t) =
     fs.rmSync(root, { recursive: true, force: true })
   })
   const shown = []
+  const toolDialogues = []
   const settings = { toolFailureNotice: true }
   let completions = 0
   const ui = createState({
     settings, layers: {}, playOverlay: (_name, _done, begin) => begin(),
-    showBubble: (message) => shown.push(message), showCompletion: () => { completions++ },
+    showBubble: (message) => shown.push(message),
+    showDialogue: (scene, message) => {
+      if (scene === 'completion') completions++
+      if (scene === 'toolFailure') toolDialogues.push(message)
+    },
     syncAnimation() {}, playSound() {}, scheduleStartup() {}, isBubbleShown: () => false,
   })
   async function syncWhen(matches) {
@@ -96,4 +101,5 @@ test('tool and turn failure reasons reach the desktop notification', async (t) =
   assert.equal(hidden.tools.lastFailName, '')
   assert.equal(hidden.tools.lastFailReason, '权限不足或访问被拒绝（HTTP 403）')
   assert.equal(shown.at(-1), '博士，刚才那个工具没跑起来。\n权限不足或访问被拒绝（HTTP 403）')
+  assert.deepEqual(toolDialogues, [shown[0], shown.at(-1)])
 })

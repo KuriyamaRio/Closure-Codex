@@ -9,15 +9,58 @@ const talkHold = 2200 // Keep a short response visible across a one-second rende
 const rolloutName = /^rollout-[\w-]+\.jsonl$/i
 const publicToolNames = new Set(['web.search', 'web_run', 'search_service.web_run', 'apply_patch', 'exec_command'])
 
+function parseToolOutput(output) {
+  if (typeof output !== 'string') return output
+  try { return JSON.parse(output) } catch { return null }
+}
+
 function createActivity(enabled, sessionsRoot) {
   const files = new Map()
   const pending = new Map()
   const tools = { ok: 0, fail: 0 }
+  let turnStartSeq = 0
   const turnEnd = { seq: 0, kind: 'completed', at: 0 }
   const errors = { count: 0 }
+  const userInput = { seq: 0, scene: null }
   const startedAt = Date.now()
   let rateLimits = { at: 0, windows: [] }
   let watcher
+
+  function noteUserInput(scene, notify) {
+    if (!notify) return
+    userInput.seq++
+    userInput.scene = scene
+  }
+
+  function trackUserInput(event, session, notify) {
+    if (session.subagent) return
+    if (event.type === 'function_call' && typeof event.call_id === 'string') {
+      if (event.name === 'request_user_input') {
+        if (session.inputCalls.has(event.call_id)) return
+        session.inputCalls.set(event.call_id, false)
+        noteUserInput('question', notify)
+      } else if (event.name === 'request_user_input_async') {
+        session.inputCalls.set(event.call_id, true)
+      }
+    } else if (event.type === 'function_call_output' && session.inputCalls.has(event.call_id)) {
+      const asynchronous = session.inputCalls.get(event.call_id)
+      session.inputCalls.delete(event.call_id)
+      const output = parseToolOutput(event.output)
+      if (asynchronous && output?.accepted === true) {
+        session.awaitingAnswers++
+        noteUserInput('question', notify)
+      } else if (!asynchronous && Object.values(output?.answers ?? {}).some((answer) =>
+        Array.isArray(answer?.answers) && answer.answers.some((text) => typeof text === 'string' && text.trim())
+      )) {
+        noteUserInput('answer', notify)
+      }
+    } else if (session.awaitingAnswers && event.type === 'message' && event.role === 'user' &&
+      event.content?.some?.(({ type, text }) => type === 'input_text' && typeof text === 'string' &&
+        text.startsWith('<send_user_message_question_reply>') && text.trimEnd().endsWith('</send_user_message_question_reply>'))) {
+      session.awaitingAnswers--
+      noteUserInput('answer', notify)
+    }
+  }
 
   function applyLine(line, session, notify) {
     let record
@@ -30,6 +73,7 @@ function createActivity(enabled, sessionsRoot) {
       return
     }
     if (record.type === 'response_item') {
+      trackUserInput(event, session, notify)
       if (session.turn && event.type === 'message' && event.role === 'assistant') {
         session.mode = 'outputting'
         if (Number.isFinite(at)) {
@@ -65,7 +109,8 @@ function createActivity(enabled, sessionsRoot) {
     }
 
     if (event.type === 'task_started') {
-      if (typeof event.turn_id !== 'string') return
+      if (typeof event.turn_id !== 'string' || session.turn === event.turn_id) return
+      if (notify && !session.subagent) turnStartSeq++
       session.turn = event.turn_id
       session.mode = 'thinking'
       session.error = null
@@ -110,8 +155,9 @@ function createActivity(enabled, sessionsRoot) {
       const kind = event.type === 'turn_aborted' ? 'interrupted' : session.error ? 'error' : 'completed'
       session.turn = null
       session.mode = null
+      session.inputCalls.clear()
       if (kind !== 'completed') session.talkUntil = 0
-      if (notify) {
+      if (notify && !session.subagent) {
         turnEnd.seq++
         turnEnd.kind = kind
         turnEnd.at = Date.now()
@@ -132,6 +178,7 @@ function createActivity(enabled, sessionsRoot) {
       const session = prior && !truncated ? prior : {
         offset: 0, updated: 0, turn: null, mode: null, talkUntil: 0, error: null,
         activityAt: 0, totalTokens: null, turnStartTokens: null, turnTokens: null,
+        inputCalls: new Map(), awaitingAnswers: 0,
       }
       if (size === session.offset) return
       const start = Math.max(session.offset, size - tailLimit)
@@ -215,9 +262,11 @@ function createActivity(enabled, sessionsRoot) {
             total: selected.totalTokens, turn: selected.turnTokens,
           },
         },
-        work: { mode: selected?.talkUntil > now ? 'outputting' : active?.mode || 'idle' },
+        work: { mode: selected?.talkUntil > now ? 'outputting' : active?.mode || 'idle', active: Boolean(active) },
         tools: { ...tools },
         errors: { ...errors },
+        userInput: { ...userInput },
+        turnStartSeq,
         turnEnd: { seq: turnEnd.seq, kind: turnEnd.kind, errorSeq: turnEnd.errorSeq, reason: turnEnd.reason },
       }
     },

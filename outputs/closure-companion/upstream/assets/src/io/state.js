@@ -8,6 +8,10 @@
 
 import { PREFIX, SIZE_MIN, SIZE_MAX } from '../core/env.js'
 import { HAPPY_CHANCE } from '../anim/library.js'
+import { normalizeSettings } from '../shared/protocol.js'
+
+const WORKING_VOICE_DELAY = 15_000
+const IDLE_VOICE_DELAY = 5 * 60_000
 
 export const LOW_QUOTA_NOTICE = '博士，额度快见底了。手头还有多少活？'
 const UNKNOWN_ERROR_NOTICE = '奇怪，光看这条报错还不知道是哪儿出了问题。'
@@ -40,23 +44,28 @@ export function createState(deps) {
   var lowBalance = false
   var lowQuotaWindows = new Set()
   let lastQuotaReminder = Date.now()
-  let lastWorkActivity = lastQuotaReminder
+  let workSince = null
+  let idleSince = null
+  let workingSpoken = false
+  let idleSpoken = false
 
-  function react(name, message, sound, duration) {
+  function react(name, message, sound, duration, voiceScene) {
     return playOverlay(name, undefined, function () {
-      if (message) showBubble(message, duration)
+      if (message && !(voiceScene && deps.showDialogue(voiceScene, message, duration))) {
+        showBubble(message, duration)
+      }
       if (sound) playSound(sound)
     })
   }
 
-  function toolOverlay(name, message, sound, duration) {
+  function toolOverlay(name, message, sound, duration, voiceScene) {
     var now = Date.now()
     toolPlayTimes = toolPlayTimes.filter(function (t) { return now - t < TOOL_WINDOW })
     var last = toolPlayTimes.length ? toolPlayTimes[toolPlayTimes.length - 1] : 0
     if (now - last < TOOL_MIN_GAP) return false
     if (toolPlayTimes.length >= TOOL_WINDOW_MAX) return false
     toolPlayTimes.push(now)
-    react(name, message, sound, duration)
+    react(name, message, sound, duration, voiceScene)
     return true
   }
 
@@ -68,13 +77,30 @@ export function createState(deps) {
     if (prev?.closureCompanion?.source !== s.closureCompanion?.source) lowQuotaWindows.clear()
 
     var mode = s.work && s.work.mode
-    if (mode === 'thinking' || mode === 'outputting' ||
-        (s.turnEnd?.seq ?? 0) > (prev?.turnEnd?.seq ?? 0)) lastWorkActivity = Date.now()
     layers.work = mode === 'outputting' ? 'Talk' : (mode === 'thinking' ? 'Special_B' : null)
+    const now = Date.now()
+    const newTurn = (s.turnStartSeq ?? 0) > (prev?.turnStartSeq ?? 0)
+    const active = s.work?.active ?? Boolean(layers.work)
+    const quotaIsLow = s.closureCompanion?.quota.some(({ remaining }) => remaining <= 10)
+    const quotaChanged = s.closureCompanion && quotaIsLow !== (lowQuotaWindows.size > 0)
+    if (s.closureCompanion) {
+      if (active) {
+        if (workSince === null || newTurn) {
+          workSince = now
+          workingSpoken = false
+        }
+        idleSince = null
+      } else {
+        workSince = null
+        if (idleSince === null || newTurn || s.turnEnd?.seq > (prev?.turnEnd?.seq ?? 0)) {
+          idleSince = now
+          idleSpoken = false
+        }
+      }
+    }
 
     if (s.closureCompanion) {
       var quota = s.closureCompanion.quota
-      var quotaIsLow = quota.some(function (quotaWindow) { return quotaWindow.remaining <= 10 })
       layers.base = quotaIsLow ? 'Sad_Idle' : 'Idle'
       var wasLow = lowQuotaWindows.size > 0
       for (const entry of quota) {
@@ -119,7 +145,8 @@ export function createState(deps) {
           if (settings.toolFailureNotice) {
             const name = s.tools.lastFailName
             const title = name ? '博士，' + name + ' 报错了。' : '博士，刚才那个工具没跑起来。'
-            toolOverlay('Sad_Begin', title + '\n' + (s.tools.lastFailReason || UNKNOWN_ERROR_NOTICE), 'fail', 4600)
+            toolOverlay('Sad_Begin', title + '\n' + (s.tools.lastFailReason || UNKNOWN_ERROR_NOTICE), 'fail', 4600,
+              s.closureCompanion ? 'toolFailure' : undefined)
           }
         } else if (s.tools.fail === prev.tools.fail && s.tools.ok > prev.tools.ok) {
           var successCount = s.tools.ok - prev.tools.ok
@@ -135,11 +162,17 @@ export function createState(deps) {
         react('Special_A', '感谢惠顾~\n采购部随时欢迎下次光临！', 'coin')
       }
       // 本轮结束（turn/end）：完成 / 中断 / 出错各给一句反馈
+      const toolFailed = settings.toolFailureNotice && s.tools?.fail > prev.tools?.fail
+      const canSpeak = !quotaChanged && curErrCount <= prevErrCount && !toolFailed
+      const inputScene = s.userInput?.scene
+      const inputSpoken = s.closureCompanion && canSpeak && !terminalFailure &&
+        (s.userInput?.seq ?? 0) > (prev.userInput?.seq ?? 0) &&
+        (inputScene === 'question' || inputScene === 'answer') && deps.showDialogue(inputScene)
       if (curTurnEnd > prevTurnEnd) {
         if (kind === 'completed') {
-          if (!layers.overlay && curErrCount <= prevErrCount && !(s.tools?.fail > prev.tools?.fail)) {
-            if (s.closureCompanion) deps.showCompletion()
-            else showBubble()
+          if (canSpeak && !inputSpoken) {
+            if (s.closureCompanion) deps.showDialogue('completion')
+            else if (!layers.overlay) showBubble()
           }
         } else if (kind === 'error') {
           const { reason, errorSeq } = s.turnEnd
@@ -148,6 +181,15 @@ export function createState(deps) {
           }
         } else {
           react('Sad_Begin', '欸，这轮停了。博士，还接着做吗？', 'turnfail')
+        }
+      } else if (s.closureCompanion && newTurn && canSpeak && !inputSpoken) {
+        deps.showDialogue('start')
+      }
+      if (s.closureCompanion && canSpeak && !terminalFailure && !inputSpoken) {
+        if (workSince !== null && !workingSpoken && now - workSince >= WORKING_VOICE_DELAY) {
+          workingSpoken = deps.showDialogue('working')
+        } else if (idleSince !== null && !idleSpoken && now - idleSince >= IDLE_VOICE_DELAY) {
+          idleSpoken = deps.showDialogue('idle')
         }
       }
       if (s.periodSeq > prev.periodSeq) {
@@ -197,6 +239,8 @@ export function createState(deps) {
         if (isFinite(Number(s.opacity))) settings.opacity = Math.min(1, Math.max(0.3, Number(s.opacity)))
         if (typeof s.sound === 'boolean') settings.sound = s.sound
         if (isFinite(Number(s.volume))) settings.volume = Math.min(1, Math.max(0, Number(s.volume)))
+        const { voiceQueueMode, voiceQueues } = normalizeSettings(s, settings)
+        Object.assign(settings, { voiceQueueMode, voiceQueues })
         layout()
         repositionForAnchor()
         resolveFlip()
@@ -218,7 +262,6 @@ export function createState(deps) {
     setPollInterval: setPollInterval,
     loadHostConfig: loadHostConfig,
     getState: function () { return lastState },
-    getIdleDuration: () => Date.now() - lastWorkActivity,
     dispose: dispose,
   }
 }

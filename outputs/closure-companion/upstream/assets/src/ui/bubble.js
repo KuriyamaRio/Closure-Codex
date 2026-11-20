@@ -6,20 +6,8 @@
 
 import { PREFIX } from '../core/env.js'
 
-export const dialogue = Object.freeze({
-  greeting: '给，咖啡。看你那黑眼圈，昨晚又熬夜了吧？',
-  tap: '别急，我还在算呢。',
-  snack: '烧烤味饼干，来一片？',
-  screen: '一直盯着屏幕头都晕了……巧克力巧克力……',
-  idle: '喂？对对对，博士睡了。赶快把之前滞销的货物送到办公室来，我看看待会儿推销哪一款……',
-  shop: '采购部这么多种类的零食，当然是有特殊渠道才能买到啦！当年为了修好罗德岛，我搞来了哥伦比亚最先进的全自动装配线，殿下这才让我负责采购的。所以，为了支持采购部的工作，不许砍价！',
-  victory: '博士，大家表现得这么好，是不是应该采购点东西奖励一下？',
-})
-const clickDialogue = {
-  working: ['tap', 'screen'],
-  ready: ['greeting', 'snack', 'shop'],
-  resting: ['snack', 'shop', 'idle'],
-}
+import { dialogue } from '../core/dialogue.js'
+import { getVoiceQueues } from '../shared/protocol.js'
 
 export function quotaLines(state) {
   const companion = state?.closureCompanion
@@ -76,6 +64,9 @@ export function createBubble(deps) {
 
   function hideBubble() {
     bubbleShown = false
+    taskDialogueShown = false
+    bubbleEventUntil = 0
+    clearTimeout(bubbleHideTimer)
     audio.stopVoice()
     if (bubbleEl) {
       try { bubbleEl.getAnimations().forEach(function (a) { a.cancel() }) } catch (err) {}
@@ -86,11 +77,8 @@ export function createBubble(deps) {
   var bubbleEventText = ''
   var bubbleEventUntil = 0
   var interactionText = ''
-  let remainingDialogue = []
-  let lastDialogue
-  let lastContext
-  let clicksSinceQuota = 0
-  var bubbleMode = 'info'   // 'event'（事件反馈，过期即收）| 'info'（点击查看，常驻 5.2s）
+  const lastVoiceByMode = { default: {}, personal: {} }
+  var bubbleMode = 'info'
 
   function ensureFont() {
     if (document.getElementById('dsh-closure-pet-font')) return
@@ -258,19 +246,17 @@ export function createBubble(deps) {
   }
   function bubbleLines() {
     // 事件反馈期间**只显示反馈内容**，不掺余额/花费/峰谷
-    if (bubbleEventText && Date.now() < bubbleEventUntil) return [bubbleEventText]
+    if (bubbleEventText && Date.now() < bubbleEventUntil) {
+      return interactionText ? [bubbleEventText, interactionText] : [bubbleEventText]
+    }
     var lines = []
     var s = getState()
     if (bubbleMode === 'quota') {
       const usage = quotaLines(s)
       return usage.length ? ['喏，博士，这次的用量在这儿。', ...usage] : []
     }
-    if (interactionText) lines.push(interactionText)
-    if (s && s.closureCompanion) {
-      if (bubbleMode === 'completion' || !interactionText || !s.closureCompanion.source) lines.push(...quotaLines(s))
-      return lines
-    }
-    if (interactionText) return lines
+    if (interactionText) return [interactionText]
+    if (s?.closureCompanion) return lines
     var b = s && s.balance
     if (b && b.ok) {
       lines.push('余额 ' + fmtMoney(b.total, b.currency) + (b.low ? ' 要花光了哦！' : '') + (b.stale ? ' 未刷新' : ''))
@@ -328,6 +314,7 @@ export function createBubble(deps) {
     var pos = placeBubble()
     renderBubble(lines, pos.tailCenter, pos.below)
     placeBubble()
+    return true
   }
 
   // 气泡显隐动画：像从桌宠头顶"冒"出来（底部为轴心），带一点回弹
@@ -359,43 +346,26 @@ export function createBubble(deps) {
   }
 
   function showInteraction() {
-    if (!settings.bubble) return
-    const state = getState()
-    if (clicksSinceQuota >= 7 && state?.closureCompanion?.source && showQuota()) {
-      clicksSinceQuota = 0
-      return
-    }
-    const mode = state?.work?.mode
-    const context = mode === 'thinking' || mode === 'outputting' ? 'working'
-      : deps.getIdleDuration() >= 300000 ? 'resting' : 'ready'
-    if (context !== lastContext) {
-      remainingDialogue = []
-      lastContext = context
-    }
-    if (!remainingDialogue.length) {
-      remainingDialogue = [...clickDialogue[context]]
-      for (let i = remainingDialogue.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1))
-        ;[remainingDialogue[i], remainingDialogue[j]] = [remainingDialogue[j], remainingDialogue[i]]
-      }
-      const next = remainingDialogue.length - 1
-      if (remainingDialogue[next] === lastDialogue) {
-        const other = Math.floor(Math.random() * next)
-        ;[remainingDialogue[next], remainingDialogue[other]] = [remainingDialogue[other], remainingDialogue[next]]
-      }
-    }
-    lastDialogue = remainingDialogue.pop()
-    clicksSinceQuota = Math.min(7, clicksSinceQuota + 1)
-    showDialogue(lastDialogue)
+    if (Date.now() < bubbleEventUntil || (taskDialogueShown && bubbleMode !== 'interaction')) return
+    showDialogue('working', '', 0, 'interaction')
   }
 
-  function showDialogue(id, mode = 'info', playVoice = true) {
-    if (!settings.bubble) return
-    showBubble(null, null, dialogue[id], mode)
-    if (!playVoice) return
+  let taskDialogueShown = false
+  function showDialogue(scene, eventText = '', eventMs = 0, mode = scene) {
+    const queue = getVoiceQueues(settings)[scene]
+    if (!queue.length || !settings.bubble || document.hidden || (!eventText && Date.now() < bubbleEventUntil)) return false
+    if (taskDialogueShown && (mode === 'working' || mode === 'idle' || mode === 'startup')) return false
+    const lastVoice = lastVoiceByMode[settings.voiceQueueMode]
+    const id = queue[(queue.indexOf(lastVoice[scene]) + 1) % queue.length]
+    lastVoice[scene] = id
+    showBubble(eventText, eventMs, dialogue[id][1], mode)
+    taskDialogueShown = true
     audio.playVoice(id, (duration) => {
-      scheduleHide(Math.max(BUBBLE_HIDE_MS, duration + 250))
+      const visibleFor = Math.max(BUBBLE_HIDE_MS, eventMs, duration + 250)
+      if (eventText) bubbleEventUntil = Date.now() + visibleFor
+      scheduleHide(visibleFor)
     }).catch(() => {})
+    return true
   }
 
   function showQuota() {
@@ -406,6 +376,7 @@ export function createBubble(deps) {
 
   function showBubble(eventText, eventMs, clickedLine = '', mode = 'info') {
     if (!settings.bubble) return
+    taskDialogueShown = false
     audio.stopVoice()
     ensureFont()
     var wasVisible = bubbleShown
@@ -419,7 +390,7 @@ export function createBubble(deps) {
       bubbleEventUntil = 0
       bubbleMode = mode
     }
-    refreshBubble()
+    if (!refreshBubble()) return
     bubbleShown = true
     // 新内容才重新"弹"一次；只是刷新数字时不打断动画
     if (!wasVisible || eventText || clickedLine || mode === 'quota') popBubbleIn()
@@ -452,6 +423,7 @@ export function createBubble(deps) {
     clearTimeout(bubbleHideTimer)
     bubbleHideTimer = setTimeout(function () {
       bubbleShown = false
+      taskDialogueShown = false
       audio.stopVoice()
       popBubbleOut()
       if (bubbleTickTimer) { clearInterval(bubbleTickTimer); bubbleTickTimer = 0 }
@@ -469,5 +441,5 @@ export function createBubble(deps) {
     bubbleSvg = null
   }
 
-  return { show: showBubble, showDialogue: showDialogue, showQuota: showQuota, showInteraction: showInteraction, refresh: refreshBubble, hide: hideBubble, dispose: dispose, isShown: function () { return bubbleShown } }
+  return { show: showBubble, showDialogue, showQuota: showQuota, showInteraction: showInteraction, refresh: refreshBubble, hide: hideBubble, dispose: dispose, isShown: function () { return bubbleShown } }
 }

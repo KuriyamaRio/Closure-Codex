@@ -30,7 +30,7 @@ import { LOOP_RANGES, LOOP_MODES, THINK_NOD_MIN_MS, THINK_NOD_MAX_MS, HAPPY_CHAN
 import { createAudio } from './audio.js'
 import { createLayout } from './ui/layout.js'
 import { createPanel } from './ui/panel.js'
-import { createBubble, dialogue } from './ui/bubble.js'
+import { createBubble } from './ui/bubble.js'
 import { createSticker } from './ui/sticker.js'
 import { createDrag } from './input/drag.js'
 import { createDirector } from './anim/director.js'
@@ -324,6 +324,7 @@ import { createState, LOW_QUOTA_NOTICE } from './io/state.js'
     if (document.hidden) {
       if (dragApi) dragApi.cancelDrag() // 切后台时可能收不到 pointerup，先把挡板和拦截器撤掉
       audio.stopVoice()
+      closePanel()
       stop()
       setPollInterval(5000) // 后台没必要 1s 拉一次状态
     } else {
@@ -354,10 +355,6 @@ import { createState, LOW_QUOTA_NOTICE } from './io/state.js'
   var audioEnsure = audio.ensure
   var loadSounds = audio.loadSounds
   var playSound = audio.playSound
-  function updateVoice() {
-    audio.stopVoice()
-    audio.preloadVoices(Object.keys(dialogue))
-  }
 
   // ————————————————————— 气泡（像素风）—————————————————————
   // 实现在 ui/bubble.js；实例在组合阶段创建。
@@ -411,6 +408,7 @@ import { createState, LOW_QUOTA_NOTICE } from './io/state.js'
     if (p.companion) {
       var snapshot = stateApi && stateApi.getState()
       p.low = !!snapshot?.closureCompanion?.quota.some(function (quotaWindow) { return quotaWindow.remaining <= 10 })
+      if (!p.low) bubbleApi.showDialogue('startup')
     }
     // 强制插播：清掉 Talk 锁与挂起的覆盖动画，立刻把开屏演出来
     director.resetLocks()
@@ -428,8 +426,6 @@ import { createState, LOW_QUOTA_NOTICE } from './io/state.js'
           playSound('fail')
         })
       }, STARTUP_GAP)
-    }, function () {
-      bubbleApi.showDialogue('greeting', 'info', settings.startupVoice)
     })
   }
 
@@ -466,13 +462,19 @@ import { createState, LOW_QUOTA_NOTICE } from './io/state.js'
   panelUi = createPanel({
     settings: settings, saveSettings: saveSettings, resolveFlip: resolveFlip,
     layout: layout, repositionForAnchor: repositionForAnchor, applyOpacity: applyOpacity,
-    hideBubble: hideBubble, audioEnsure: audioEnsure, loadSounds: loadSounds, playSound: playSound, updateVoice,
+    hideBubble: hideBubble, audioEnsure: audioEnsure, loadSounds: loadSounds, playSound: playSound,
+    updateVoice: audio.stopVoice,
+    previewVoice: (id) => {
+      if (!settings.voice || document.hidden) return Promise.resolve(false)
+      hideBubble()
+      return audio.playVoice(id, undefined, true)
+    },
+    stopVoicePreview: audio.stopPreview,
     setVoiceVolume: audio.setVoiceVolume,
     size: size, pet: pet, resetPosition: resetPosition, preview: director.preview,
   })
   bubbleApi = createBubble({
     getState: function () { return stateApi ? stateApi.getState() : null }, pet: pet, size: size, settings: settings, audio,
-    getIdleDuration: () => stateApi.getIdleDuration(),
   })
   stickerApi = createSticker({
     getState: function () { return stateApi ? stateApi.getState() : null }, pet: pet, size: size, settings: settings,
@@ -480,7 +482,7 @@ import { createState, LOW_QUOTA_NOTICE } from './io/state.js'
   stateApi = createState({
     layers: layers, playOverlay: playOverlay, syncAnimation: syncAnimation,
     showBubble: showBubble, showQuota: bubbleApi.showQuota, refreshBubble: refreshBubble, playSound: playSound,
-    showCompletion: () => bubbleApi.showDialogue('victory', 'completion', settings.completionVoice),
+    showDialogue: bubbleApi.showDialogue,
     scheduleStartup: scheduleStartup,
     settings: settings, saveSettings: saveSettings,
     layout: layout, repositionForAnchor: repositionForAnchor,
@@ -585,7 +587,6 @@ import { createState, LOW_QUOTA_NOTICE } from './io/state.js'
       startPolling()
       loadHostConfig()
       loadSounds()
-      updateVoice()
       log('启动完成', names.length, 'animations · size', settings.size, '· mirror', settings.mirror)
 
       window.__dshClosurePet = {

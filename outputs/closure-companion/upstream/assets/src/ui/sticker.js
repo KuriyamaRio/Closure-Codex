@@ -98,11 +98,8 @@ export function createSticker(deps) {
 
   function showValleySticker() {
     var s = getState()
-    if (!s || !settings.bubble) return
-    var quota = s.closureCompanion && s.closureCompanion.quota
-    var label = quota && quota.length ? '余 ' + Math.round(quota[0].remaining * 10) / 10 + '%'
-      : s.period === 'valley' ? '-99%' : ''
-    if (!label) return
+    if (!s || s.closureCompanion || s.period !== 'valley' || !settings.bubble) return
+    var label = '-99%'
     ensureSticker()
     var changed = label !== stickerLabel
     stickerLabel = label

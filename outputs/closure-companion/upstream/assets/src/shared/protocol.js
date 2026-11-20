@@ -7,6 +7,8 @@
 //
 // 该文件必须保持「纯数据 + 纯函数」：浏览器会通过 /dsh-closure/src/shared/protocol.js 加载它。
 
+import { DEFAULT_VOICE_QUEUES, dialogue, VOICE_SCENES } from '../core/dialogue.js'
+
 export const SCHEMA_VERSION = 1
 
 export const URL_PREFIX = '/dsh-closure'
@@ -28,11 +30,15 @@ export const SETTINGS_DEFAULTS = Object.freeze({
   voice: true,
   voiceLanguage: 'zh',
   voiceVolume: 0.7,
-  startupVoice: true,
-  completionVoice: true,
+  voiceQueueMode: 'default',
+  voiceQueues: Object.freeze(Object.fromEntries(Object.keys(VOICE_SCENES).map((scene) => [scene, Object.freeze([])]))),
   toolFailureNotice: true,
   quotaReminderMinutes: 1,
 })
+
+export function getVoiceQueues(settings) {
+  return settings.voiceQueueMode === 'personal' ? settings.voiceQueues : DEFAULT_VOICE_QUEUES
+}
 
 /**
  * 把外部传进来的设置补丁归一化到合法范围；非法字段保持 base 的值。
@@ -53,9 +59,16 @@ export function normalizeSettings(raw, base) {
   const volume = Number(raw.volume)
   if (Number.isFinite(volume)) out.volume = Math.min(1, Math.max(0, volume))
   if (Number.isFinite(raw.voiceVolume)) out.voiceVolume = Math.min(1, Math.max(0, raw.voiceVolume))
-  for (const key of ['startupVoice', 'completionVoice', 'toolFailureNotice']) {
-    if (typeof raw[key] === 'boolean') out[key] = raw[key]
+  if (raw.voiceQueueMode === 'default' || raw.voiceQueueMode === 'personal') out.voiceQueueMode = raw.voiceQueueMode
+  if (raw.voiceQueues && typeof raw.voiceQueues === 'object') {
+    out.voiceQueues = Object.fromEntries(Object.keys(VOICE_SCENES).map((scene) => {
+      const ids = raw.voiceQueues[scene]
+      return [scene, Array.isArray(ids)
+        ? [...new Set(ids.filter((id) => typeof id === 'string' && Object.hasOwn(dialogue, id)))]
+        : out.voiceQueues[scene]]
+    }))
   }
+  if (typeof raw.toolFailureNotice === 'boolean') out.toolFailureNotice = raw.toolFailureNotice
   if ([0, 1, 5].includes(raw.quotaReminderMinutes)) out.quotaReminderMinutes = raw.quotaReminderMinutes
   return out
 }
