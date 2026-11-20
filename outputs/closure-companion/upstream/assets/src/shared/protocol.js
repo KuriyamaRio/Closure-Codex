@@ -28,6 +28,10 @@ export const SETTINGS_DEFAULTS = Object.freeze({
   voice: true,
   voiceLanguage: 'zh',
   voiceVolume: 0.7,
+  startupVoice: true,
+  completionVoice: true,
+  toolFailureNotice: true,
+  quotaReminderMinutes: 1,
 })
 
 /**
@@ -49,5 +53,9 @@ export function normalizeSettings(raw, base) {
   const volume = Number(raw.volume)
   if (Number.isFinite(volume)) out.volume = Math.min(1, Math.max(0, volume))
   if (Number.isFinite(raw.voiceVolume)) out.voiceVolume = Math.min(1, Math.max(0, raw.voiceVolume))
+  for (const key of ['startupVoice', 'completionVoice', 'toolFailureNotice']) {
+    if (typeof raw[key] === 'boolean') out[key] = raw[key]
+  }
+  if ([0, 1, 5].includes(raw.quotaReminderMinutes)) out.quotaReminderMinutes = raw.quotaReminderMinutes
   return out
 }

@@ -1,11 +1,13 @@
 const fs = require('node:fs')
 const path = require('node:path')
+const { summarizeError, summarizeToolError } = require('./error-summary.cjs')
 
 const tailLimit = 256 * 1024
 const activeTimeout = 20 * 60 * 1000
 const quotaTimeout = 30 * 60 * 1000
 const talkHold = 2200 // Keep a short response visible across a one-second renderer poll.
 const rolloutName = /^rollout-[\w-]+\.jsonl$/i
+const publicToolNames = new Set(['web.search', 'web_run', 'search_service.web_run', 'apply_patch', 'exec_command'])
 
 function createActivity(enabled, sessionsRoot) {
   const files = new Map()
@@ -23,16 +25,35 @@ function createActivity(enabled, sessionsRoot) {
     if (!record.payload) return
     const event = record.payload
     const at = Date.parse(record.timestamp)
+    if (record.type === 'session_meta') {
+      session.subagent = Boolean(event.source?.subagent)
+      return
+    }
     if (record.type === 'response_item') {
       if (session.turn && event.type === 'message' && event.role === 'assistant') {
         session.mode = 'outputting'
-        if (notify && Number.isFinite(at)) session.talkUntil = at + talkHold
+        if (Number.isFinite(at)) {
+          session.activityAt = Math.max(session.activityAt, at)
+          if (notify) session.talkUntil = at + talkHold
+        }
       }
       return
     }
     if (record.type !== 'event_msg') return
 
     if (event.type === 'token_count') {
+      const total = event.info?.total_token_usage?.total_tokens
+      if (Number.isSafeInteger(total) && total >= 0 && Number.isFinite(at)) {
+        if (session.turn && (session.turnStartTokens === null || total < session.totalTokens)) {
+          const last = event.info.last_token_usage?.total_tokens
+          session.turnStartTokens = Number.isSafeInteger(last) && last >= 0 && last <= total ? total - last : null
+        }
+        session.totalTokens = total
+        if (session.turn) {
+          session.turnTokens = session.turnStartTokens === null ? null : total - session.turnStartTokens
+        }
+        session.activityAt = Math.max(session.activityAt, at)
+      }
       const limits = event.rate_limits
       if (!limits || (limits.limit_id && limits.limit_id !== 'codex') || !Number.isFinite(at) || at < rateLimits.at) return
       const windows = [limits.primary, limits.secondary].filter((entry) =>
@@ -47,8 +68,11 @@ function createActivity(enabled, sessionsRoot) {
       if (typeof event.turn_id !== 'string') return
       session.turn = event.turn_id
       session.mode = 'thinking'
-      session.failed = false
+      session.error = null
       session.talkUntil = 0
+      session.turnStartTokens = session.totalTokens
+      session.turnTokens = null
+      if (Number.isFinite(at)) session.activityAt = Math.max(session.activityAt, at)
       return
     }
     if (!session.turn || (event.turn_id && event.turn_id !== session.turn)) return
@@ -56,21 +80,34 @@ function createActivity(enabled, sessionsRoot) {
     if (event.type === 'agent_message' ||
         (['item_started', 'item_completed'].includes(event.type) && event.item?.type === 'AgentMessage')) {
       session.mode = 'outputting'
+      if (Number.isFinite(at)) session.activityAt = Math.max(session.activityAt, at)
       if (notify && Number.isFinite(at)) session.talkUntil = at + talkHold
-    } else if (event.type === 'item_completed' && ['CommandExecution', 'McpToolCall', 'FileChange'].includes(event.item?.type)) {
+    } else if (['item_started', 'item_completed'].includes(event.type) &&
+        ['CommandExecution', 'McpToolCall', 'FileChange'].includes(event.item?.type)) {
       session.mode = 'thinking'
+      if (Number.isFinite(at)) session.activityAt = Math.max(session.activityAt, at)
+      if (event.type !== 'item_completed') return
       const item = event.item
       const mcp = item.type === 'McpToolCall'
       const toolError = mcp && (item.status === 'failed' || item.result?.isError === true || item.result?.is_error === true)
       // A command can run normally and still return a nonzero result (for example, a search with no matches).
-      if (notify && toolError) tools.fail++
+      if (notify && toolError) {
+        tools.fail++
+        tools.lastFailName = publicToolNames.has(item.tool) ? item.tool : ''
+        tools.lastFailReason = summarizeToolError(item)
+      }
       else if (notify && item.status === 'completed' && (item.exit_code ?? 0) === 0) tools.ok++
     } else if (event.type === 'error' && !event.will_retry && !event.willRetry) {
-      session.failed = true
       session.talkUntil = 0
-      if (notify) errors.count++
+      const details = event.error ?? event
+      session.error = { reason: summarizeError(details), seq: 0 }
+      if (notify) {
+        session.error.seq = ++errors.count
+        errors.message = session.error.reason
+      }
     } else if (event.type === 'task_complete' || event.type === 'turn_aborted') {
-      const kind = event.type === 'turn_aborted' ? 'interrupted' : session.failed ? 'error' : 'completed'
+      if (Number.isFinite(at)) session.activityAt = Math.max(session.activityAt, at)
+      const kind = event.type === 'turn_aborted' ? 'interrupted' : session.error ? 'error' : 'completed'
       session.turn = null
       session.mode = null
       if (kind !== 'completed') session.talkUntil = 0
@@ -78,6 +115,9 @@ function createActivity(enabled, sessionsRoot) {
         turnEnd.seq++
         turnEnd.kind = kind
         turnEnd.at = Date.now()
+        turnEnd.errorSeq = kind === 'error' ? session.error.seq : 0
+        turnEnd.reason = kind === 'error' ? session.error.reason
+          : kind === 'interrupted' && event.reason === 'interrupted' ? '本轮被中断' : ''
       }
     }
   }
@@ -88,11 +128,21 @@ function createActivity(enabled, sessionsRoot) {
       fd = fs.openSync(filename, 'r')
       const { size, mtimeMs, birthtimeMs } = fs.fstatSync(fd)
       const prior = files.get(filename)
-      const session = prior || { offset: 0, updated: 0, turn: null, mode: null, talkUntil: 0, failed: false }
-      const truncated = session.offset > size
-      if (truncated) Object.assign(session, { offset: 0, turn: null, mode: null, talkUntil: 0, failed: false })
+      const truncated = prior && prior.offset > size
+      const session = prior && !truncated ? prior : {
+        offset: 0, updated: 0, turn: null, mode: null, talkUntil: 0, error: null,
+        activityAt: 0, totalTokens: null, turnStartTokens: null, turnTokens: null,
+      }
       if (size === session.offset) return
       const start = Math.max(session.offset, size - tailLimit)
+      if ((!prior || truncated) && start > 0) {
+        const head = Buffer.alloc(Math.min(tailLimit, size))
+        const headBytes = fs.readSync(fd, head, 0, head.length, 0)
+        const firstLine = head.indexOf(10)
+        if (firstLine >= 0 && firstLine < headBytes) {
+          applyLine(head.toString('utf8', 0, firstLine), session, false)
+        }
+      }
       const data = Buffer.alloc(size - start)
       const bytes = fs.readSync(fd, data, 0, data.length, start)
       session.updated = mtimeMs
@@ -146,19 +196,29 @@ function createActivity(enabled, sessionsRoot) {
     snapshot() {
       const now = Date.now()
       let active
+      let latest
       for (const [filename, session] of files) {
-        if (now - session.updated > activeTimeout) files.delete(filename)
-        else if ((session.mode || session.talkUntil > now) && (!active || session.updated > active.updated)) active = session
+        if (session.subagent) continue
+        if (session.activityAt && (!latest || session.activityAt > latest.activityAt)) latest = session
+        if (session.turn && now - session.activityAt <= activeTimeout &&
+            (!active || session.activityAt > active.activityAt)) active = session
       }
+      for (const [filename, session] of files) {
+        if (session !== latest && now - session.updated > activeTimeout) files.delete(filename)
+      }
+      const selected = active || latest
       return {
         closureCompanion: {
           following: Boolean(watcher), completed: now - turnEnd.at < 10000 && turnEnd.kind === 'completed',
           quota: now - rateLimits.at < quotaTimeout ? rateLimits.windows.filter((entry) => entry.resetsAt > now) : [],
+          tokenUsage: selected?.totalTokens == null ? null : {
+            total: selected.totalTokens, turn: selected.turnTokens,
+          },
         },
-        work: { mode: active?.talkUntil > now ? 'outputting' : active?.mode || 'idle' },
+        work: { mode: selected?.talkUntil > now ? 'outputting' : active?.mode || 'idle' },
         tools: { ...tools },
         errors: { ...errors },
-        turnEnd: { seq: turnEnd.seq, kind: turnEnd.kind },
+        turnEnd: { seq: turnEnd.seq, kind: turnEnd.kind, errorSeq: turnEnd.errorSeq, reason: turnEnd.reason },
       }
     },
     stop() {

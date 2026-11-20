@@ -1,11 +1,11 @@
 param(
-    [string] $Version = '0.1.0',
+    [string] $Version = '0.2.0',
     [string] $ElectronZip = (Join-Path $PSScriptRoot 'work/companion-runtime/electron-mirror.zip'),
     [string] $Destination = (Join-Path $PSScriptRoot 'dist')
 )
 
 $ErrorActionPreference = 'Stop'
-if ($Version -notmatch '^\d+\.\d+\.\d+$') { throw 'Expected a numeric version such as 0.1.0.' }
+if ($Version -notmatch '^\d+\.\d+\.\d+$') { throw 'Expected a numeric version such as 0.2.0.' }
 $runtimeHash = '2BA6223AFA9121F42831FEFE92C434334907540165294FC56697449D12E7CFE9'
 if (!(Test-Path -LiteralPath $ElectronZip -PathType Leaf) -or (Get-FileHash -LiteralPath $ElectronZip).Hash -ne $runtimeHash) {
     throw 'Supply the official electron-v45.4.1-win32-x64.zip using -ElectronZip.'
@@ -18,7 +18,7 @@ $staging = Join-Path $destinationPath ($name + '-' + [Guid]::NewGuid().ToString(
 $package = New-Item -ItemType Directory -Path (Join-Path $staging $name)
 $packagePath = $package.FullName
 try {
-    foreach ($file in 'Install.cmd','Uninstall.cmd','Copy-Dark-Theme.cmd','Copy-Light-Theme.cmd','Setup.ps1','README.md') {
+    foreach ($file in 'Install.cmd','Uninstall.cmd','Copy-Dark-Theme.cmd','Copy-Light-Theme.cmd','Setup.ps1','README.md','CHANGELOG.md') {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination $packagePath
     }
     $outputPath = New-Item -ItemType Directory -Path (Join-Path $packagePath 'outputs')

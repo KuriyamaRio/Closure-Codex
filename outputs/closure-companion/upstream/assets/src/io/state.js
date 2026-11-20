@@ -9,6 +9,9 @@
 import { PREFIX, SIZE_MIN, SIZE_MAX } from '../core/env.js'
 import { HAPPY_CHANCE } from '../anim/library.js'
 
+export const LOW_QUOTA_NOTICE = '博士，额度快见底了。手头还有多少活？'
+const UNKNOWN_ERROR_NOTICE = '奇怪，光看这条报错还不知道是哪儿出了问题。'
+
 export function createState(deps) {
   var layers = deps.layers
   var playOverlay = deps.playOverlay
@@ -36,7 +39,8 @@ export function createState(deps) {
   var TOOL_WINDOW_MAX = 3      // 窗口内最多播几次
   var lowBalance = false
   var lowQuotaWindows = new Set()
-  var nextQuotaReminder = Date.now() + 60000
+  let lastQuotaReminder = Date.now()
+  let lastWorkActivity = lastQuotaReminder
 
   function react(name, message, sound, duration) {
     return playOverlay(name, undefined, function () {
@@ -45,14 +49,14 @@ export function createState(deps) {
     })
   }
 
-  function toolOverlay(name, message, sound) {
+  function toolOverlay(name, message, sound, duration) {
     var now = Date.now()
     toolPlayTimes = toolPlayTimes.filter(function (t) { return now - t < TOOL_WINDOW })
     var last = toolPlayTimes.length ? toolPlayTimes[toolPlayTimes.length - 1] : 0
     if (now - last < TOOL_MIN_GAP) return false
     if (toolPlayTimes.length >= TOOL_WINDOW_MAX) return false
     toolPlayTimes.push(now)
-    react(name, message, sound)
+    react(name, message, sound, duration)
     return true
   }
 
@@ -64,6 +68,8 @@ export function createState(deps) {
     if (prev?.closureCompanion?.source !== s.closureCompanion?.source) lowQuotaWindows.clear()
 
     var mode = s.work && s.work.mode
+    if (mode === 'thinking' || mode === 'outputting' ||
+        (s.turnEnd?.seq ?? 0) > (prev?.turnEnd?.seq ?? 0)) lastWorkActivity = Date.now()
     layers.work = mode === 'outputting' ? 'Talk' : (mode === 'thinking' ? 'Special_B' : null)
 
     if (s.closureCompanion) {
@@ -78,9 +84,9 @@ export function createState(deps) {
       if (first) {
         scheduleStartup(false, quotaIsLow, true)
       } else if (quotaIsLow && !wasLow) {
-        react('Sad_Begin', '博士！额度快见底了！', 'fail')
+        react('Sad_Begin', LOW_QUOTA_NOTICE, 'fail')
       } else if (wasLow && !lowQuotaWindows.size) {
-        react('Special_A', '额度恢复了\n可露希尔继续为你效力~', 'coin')
+        react('Special_A', '哦，额度回来了。博士，刚才做到哪儿了？', 'coin')
       }
     } else if (first) {
       var low = !!(s.balance && s.balance.low)
@@ -110,7 +116,11 @@ export function createState(deps) {
       if (s.tools && prev.tools) {
         // 工具成功：只保留概率性的 Happy 动画，不出气泡、不播音效
         if (s.tools.fail > prev.tools.fail && !terminalFailure && curErrCount <= prevErrCount) {
-          toolOverlay('Sad_Begin', '工具调用失败' + (s.tools.lastFailName ? '：' + s.tools.lastFailName : ''), 'fail')
+          if (settings.toolFailureNotice) {
+            const name = s.tools.lastFailName
+            const title = name ? '博士，' + name + ' 报错了。' : '博士，刚才那个工具没跑起来。'
+            toolOverlay('Sad_Begin', title + '\n' + (s.tools.lastFailReason || UNKNOWN_ERROR_NOTICE), 'fail', 4600)
+          }
         } else if (s.tools.fail === prev.tools.fail && s.tools.ok > prev.tools.ok) {
           var successCount = s.tools.ok - prev.tools.ok
           // 一次轮询合并了多次成功时，保留每次工具成功原有的庆祝概率。
@@ -119,8 +129,7 @@ export function createState(deps) {
       }
       // 模型/轮次级错误：只报反馈内容（气泡此时不显示余额/花费）
       if (curErrCount > prevErrCount && !terminalFailure) {
-        var errMsg = String((s.errors && s.errors.message) || '').slice(0, 40)
-        react('Sad_Begin', '出错了' + (errMsg ? '：' + errMsg : ''), 'fail', 4600)
+        react('Sad_Begin', '嗯？怎么在这儿报错了？\n' + (s.errors.message || UNKNOWN_ERROR_NOTICE), 'fail', 4600)
       }
       if (s.topUpSeq > prev.topUpSeq) {
         react('Special_A', '感谢惠顾~\n采购部随时欢迎下次光临！', 'coin')
@@ -133,9 +142,12 @@ export function createState(deps) {
             else showBubble()
           }
         } else if (kind === 'error') {
-          react('Sad_Begin', '啧，这次出错了博士……', 'turnfail')
+          const { reason, errorSeq } = s.turnEnd
+          if (!errorSeq || errorSeq > prevErrCount) {
+            react('Sad_Begin', '博士，这轮卡在这儿了。\n' + (reason || UNKNOWN_ERROR_NOTICE), 'turnfail', 4600)
+          }
         } else {
-          react('Sad_Begin', '欸？怎么突然掐断了？', 'turnfail')
+          react('Sad_Begin', '欸，这轮停了。博士，还接着做吗？', 'turnfail')
         }
       }
       if (s.periodSeq > prev.periodSeq) {
@@ -145,8 +157,9 @@ export function createState(deps) {
     }
     // 气泡开着的时候顺带刷新数字（余额 / 倒计时）
     if (isBubbleShown()) refreshBubble()
-    else if (deps.showQuota && s.closureCompanion?.source && !document.hidden && Date.now() >= nextQuotaReminder && deps.showQuota()) {
-      nextQuotaReminder = Date.now() + 60000
+    else if (settings.quotaReminderMinutes > 0 && deps.showQuota && s.closureCompanion?.source && !document.hidden &&
+        Date.now() - lastQuotaReminder >= settings.quotaReminderMinutes * 60000 && deps.showQuota()) {
+      lastQuotaReminder = Date.now()
     }
     syncAnimation(false)
   }
@@ -205,6 +218,7 @@ export function createState(deps) {
     setPollInterval: setPollInterval,
     loadHostConfig: loadHostConfig,
     getState: function () { return lastState },
+    getIdleDuration: () => Date.now() - lastWorkActivity,
     dispose: dispose,
   }
 }

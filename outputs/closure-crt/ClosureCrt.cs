@@ -175,6 +175,7 @@ internal sealed class CrtContext : ApplicationContext
     private readonly Stopwatch settingsClock = Stopwatch.StartNew();
     private DateTime? settingsModified;
     private long nextSettingsCheck;
+    private int renderFailures;
     private bool trayEnabled = true;
     private bool scanlines = true;
     private bool vignette = true;
@@ -231,12 +232,21 @@ internal sealed class CrtContext : ApplicationContext
     private void RefreshOverlay()
     {
         ReadSettings();
-        try { overlay.Follow(trayEnabled, appearance, scanlines, vignette, strength, dshChrome); }
+        try
+        {
+            overlay.Follow(trayEnabled, appearance, scanlines, vignette, strength, dshChrome);
+            if (renderFailures != 0)
+            {
+                renderFailures = 0;
+                timer.Interval = 100;
+            }
+        }
         catch (System.ComponentModel.Win32Exception ex)
         {
-            timer.Stop();
             overlay.Follow(false, appearance);
-            if (tray != null) tray.ShowBalloonTip(5000, "Closure CRT", ex.Message, ToolTipIcon.Warning);
+            timer.Interval = 1000;
+            if (++renderFailures >= 3 && tray == null) ExitThread();
+            if (renderFailures == 1 && tray != null) tray.ShowBalloonTip(5000, "Closure CRT", ex.Message, ToolTipIcon.Warning);
         }
     }
 
@@ -361,7 +371,8 @@ internal sealed class CrtOverlay : NativeWindow, IDisposable
             {
                 string path = process.MainModule.FileName;
                 codexProcess = path.IndexOf(@"\WindowsApps\OpenAI.Codex_", StringComparison.OrdinalIgnoreCase) >= 0 &&
-                    path.EndsWith(@"\app\ChatGPT.exe", StringComparison.OrdinalIgnoreCase);
+                    (path.EndsWith(@"\app\ChatGPT.exe", StringComparison.OrdinalIgnoreCase) ||
+                     path.EndsWith(@"\app\Codex.exe", StringComparison.OrdinalIgnoreCase));
                 companionProcess = path.EndsWith(@"\electron.exe", StringComparison.OrdinalIgnoreCase);
             }
         }

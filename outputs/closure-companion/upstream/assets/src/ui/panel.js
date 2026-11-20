@@ -328,7 +328,7 @@ export function createPanel(deps) {
         if (!response.ok) throw new Error('CRT settings unavailable')
         savedCrt = await response.json()
       } catch {
-        crtStatus.textContent = value ? 'CRT 设置保存失败' : 'CRT 设置读取失败'
+        crtStatus.textContent = value ? '等等，刚调好的显示设置没存进去。' : '咦，显示设置没读出来。'
       } finally {
         if (savedCrt) syncCrt(savedCrt)
         crtControls.disabled = !savedCrt
@@ -344,7 +344,58 @@ export function createPanel(deps) {
       if (crt.open && !savedCrt) updateCrt()
       positionPanel()
     })
-    if (location.protocol === 'closure-pet:') panel.appendChild(crt)
+    if (location.protocol === 'closure-pet:') {
+      panel.appendChild(crt)
+      const notifications = document.createElement('details')
+      notifications.style.cssText = previews.style.cssText
+      const heading = document.createElement('summary')
+      heading.textContent = '提醒与播报'
+      heading.style.cursor = 'pointer'
+      notifications.appendChild(heading)
+
+      const quotaRow = row('自动额度提醒')
+      const options = document.createElement('span')
+      options.style.cssText = 'display:inline-flex;gap:4px'
+      for (const [minutes, label] of [[0, '关闭'], [1, '每分钟'], [5, '每五分钟']]) {
+        const button = document.createElement('button')
+        button.type = 'button'
+        button.textContent = label
+        button.dataset.minutes = String(minutes)
+        button.style.cssText = 'padding:3px 6px;border:1px solid #545969;border-radius:6px;color:inherit;font:inherit;cursor:pointer'
+        button.addEventListener('click', () => {
+          settings.quotaReminderMinutes = minutes
+          saveSettings(true)
+          syncQuotaOptions()
+        })
+        options.appendChild(button)
+      }
+      function syncQuotaOptions() {
+        for (const button of options.children) {
+          const selected = Number(button.dataset.minutes) === settings.quotaReminderMinutes
+          button.setAttribute('aria-pressed', String(selected))
+          button.style.background = selected ? '#525ca9' : '#303442'
+        }
+      }
+      syncQuotaOptions()
+      quotaRow.appendChild(options)
+      notifications.appendChild(quotaRow)
+
+      for (const [key, label] of [['startupVoice', '开场配音'], ['completionVoice', '任务完成配音'], ['toolFailureNotice', '工具失败提示']]) {
+        const settingRow = row(label)
+        const checkbox = document.createElement('input')
+        checkbox.type = 'checkbox'
+        checkbox.checked = settings[key]
+        checkbox.setAttribute('aria-label', label)
+        checkbox.addEventListener('change', () => {
+          settings[key] = checkbox.checked
+          saveSettings(true)
+        })
+        settingRow.appendChild(checkbox)
+        notifications.appendChild(settingRow)
+      }
+      notifications.addEventListener('toggle', positionPanel)
+      panel.appendChild(notifications)
+    }
 
     // 操作
     var actions = document.createElement('div')

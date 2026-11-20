@@ -122,16 +122,56 @@ function Find-OpenHelpers {
     return @{ Crt = $crt; Pet = $pet }
 }
 
-function Start-Helpers($children) {
-    if (!$children.Crt -and (Test-Path -LiteralPath $crtExe -PathType Leaf)) {
-        $children.Crt = Start-Process -FilePath $crtExe -ArgumentList '--no-tray' -WindowStyle Hidden -PassThru
+function Start-Helper($key) {
+    if ($key -eq 'Crt') {
+        return Start-Process -FilePath $crtExe -ArgumentList '--no-tray' -WindowStyle Hidden -PassThru
     }
-    if (!$children.Pet -and (Test-Path -LiteralPath $electronExe -PathType Leaf)) {
-        $env:CLOSURE_STATE_DIR = Join-Path $workRoot 'companion-profile'
-        Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
-        $arguments = '"' + $petApp + '" --no-tray'
-        if (!$NoActivity) { $arguments += ' --follow-activity' }
-        $children.Pet = Start-Process -FilePath $electronExe -ArgumentList $arguments -WindowStyle Hidden -PassThru
+    $env:CLOSURE_STATE_DIR = Join-Path $workRoot 'companion-profile'
+    Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
+    $arguments = '"' + $petApp + '" --no-tray'
+    if (!$NoActivity) { $arguments += ' --follow-activity' }
+    return Start-Process -FilePath $electronExe -ArgumentList $arguments -WindowStyle Hidden -PassThru
+}
+
+function Write-LifecycleLog($message) {
+    try {
+        $log = Join-Path $workRoot 'lifecycle.log'
+        if ((Test-Path -LiteralPath $log) -and (Get-Item -LiteralPath $log).Length -ge 65536) {
+            Move-Item -LiteralPath $log -Destination "$log.old" -Force
+        }
+        Add-Content -LiteralPath $log -Encoding UTF8 -Value "$(Get-Date -Format o) $message"
+    } catch { Write-Verbose 'Could not write the lifecycle log.' }
+}
+
+function Update-Helpers($children, $recovery, [long] $now) {
+    foreach ($key in 'Crt', 'Pet') {
+        $state = $recovery[$key]
+        $process = $children[$key]
+        if ($process) {
+            if (!$process.HasExited) {
+                if ($now - $state.Started -ge 60000) { $state.Attempts = 0; $state.Due = $now }
+                continue
+            }
+            $code = try { $process.ExitCode } catch [InvalidOperationException] { 'unknown' }
+            Write-LifecycleLog "$key exited with code $code while Codex was open."
+            $process.Dispose()
+            $children[$key] = $null
+            $state.Due = $now + 1000
+        }
+        if ($state.Attempts -ge 4 -or $now -lt $state.Due) { continue }
+
+        $state.Attempts++
+        $state.Started = $now
+        try {
+            $children[$key] = Start-Helper $key
+            Write-LifecycleLog "$key started (attempt $($state.Attempts))."
+        } catch {
+            Write-LifecycleLog "$key launch failed ($($_.Exception.GetType().Name))."
+            $state.Due = $now + 1000
+        }
+        if ($state.Attempts -eq 4) {
+            Write-LifecycleLog "$key reached its launch limit. It resets after a stable run or after closing and reopening Codex."
+        }
     }
 }
 
@@ -170,9 +210,13 @@ try {
         if (Test-CodexOpen) {
             if ($null -eq $lastOpen) {
                 $children = Find-OpenHelpers
-                Start-Helpers $children
+                $recovery = @{
+                    Crt = @{ Attempts = [int][bool]$children.Crt; Started = $clock.ElapsedMilliseconds; Due = 0 }
+                    Pet = @{ Attempts = [int][bool]$children.Pet; Started = $clock.ElapsedMilliseconds; Due = 0 }
+                }
             }
             $lastOpen = $clock.ElapsedMilliseconds
+            Update-Helpers $children $recovery $lastOpen
         } elseif ($null -ne $lastOpen -and $clock.ElapsedMilliseconds - $lastOpen -ge 1500) {
             Stop-Helpers $children
             $lastOpen = $null

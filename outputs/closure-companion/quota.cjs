@@ -3,9 +3,11 @@ const path = require('node:path')
 const { spawn, execFile } = require('node:child_process')
 const { createInterface } = require('node:readline')
 const { promisify } = require('node:util')
+const { version } = require('./package.json')
 
 const minute = 60_000
 const hejuHosts = new Set(['www.hejuapi.com', 'hejuapi.com'])
+const currencyUnits = new Set(Intl.supportedValuesOf('currency'))
 const run = promisify(execFile)
 
 async function findCodex() {
@@ -54,7 +56,7 @@ async function withCodex(executable, home, operation) {
     })
   }
   try {
-    await call('initialize', { clientInfo: { name: 'closure_companion', version: '1.0.0' } })
+    await call('initialize', { clientInfo: { name: 'closure_companion', version } })
     child.stdin.write('{"method":"initialized"}\n')
     return await operation(call)
   } finally {
@@ -72,7 +74,7 @@ function providerFrom(config, env) {
   try { if (base) url = new URL(base) } catch { return { source: 'unsupported' } }
   if (url?.protocol === 'https:' && hejuHosts.has(url.hostname) && !url.username && !url.password && !url.port) {
     const key = (provider.env_key ? env[provider.env_key] : provider.experimental_bearer_token)?.trim()
-    return { source: 'heju', key: /^sk-[^\s]+$/.test(key || '') ? key : undefined }
+    return { source: 'thirdParty', key: /^sk-[^\s]+$/.test(key || '') ? key : undefined }
   }
   if (name !== 'openai' || (url && url.origin !== 'https://api.openai.com')) return { source: 'unsupported' }
   const chatgptBase = config.chatgpt_base_url || env.CHATGPT_BASE_URL
@@ -93,21 +95,25 @@ async function readHeju(key, request) {
   if (!response.ok) return null
   const json = await response.json()
   const { remaining, unit } = json.data || {}
-  if (json.success !== true || !Number.isFinite(remaining) || typeof unit !== 'string' || !/^[A-Z]{2,8}$/.test(unit)) return null
-  return { remaining, unit }
+  if (json.success !== true || !Number.isFinite(remaining)) return null
+  return { remaining, unit: currencyUnits.has(unit) ? unit : '' }
 }
 
-function officialWindows(result, now) {
+function officialQuota(result, now) {
   const limits = result.rateLimitsByLimitId?.codex || result.rateLimits
-  if (!limits || (limits.limitId && limits.limitId !== 'codex')) return []
-  return [limits.primary, limits.secondary].filter((entry) => Number.isFinite(entry?.usedPercent) &&
+  if (!limits || (limits.limitId && limits.limitId !== 'codex')) return { quota: [], credits: null }
+  const quota = [limits.primary, limits.secondary].filter((entry) => Number.isFinite(entry?.usedPercent) &&
     entry.usedPercent >= 0 && entry.usedPercent <= 100 && Number.isInteger(entry.windowDurationMins) &&
     entry.windowDurationMins > 0 && Number.isFinite(entry.resetsAt) && entry.resetsAt * 1000 > now
   ).map((entry) => ({ minutes: entry.windowDurationMins, remaining: 100 - entry.usedPercent, resetsAt: entry.resetsAt * 1000 }))
+  const balance = limits.credits?.balance
+  const credits = limits.credits?.unlimited === true ? { unlimited: true }
+    : typeof balance === 'string' && /^\d{1,16}(\.\d{1,8})?$/.test(balance) ? { balance } : null
+  return { quota, credits }
 }
 
 function createQuota({ enabled, home, locate = findCodex, connect = withCodex, request = fetch, now = Date.now }) {
-  let state = { source: enabled ? 'checking' : 'disabled', quota: [], balance: null, revision: 0 }
+  let state = { source: enabled ? 'checking' : 'disabled', quota: [], balance: null, credits: null, revision: 0 }
   let timer
   let stopped = false
   let nextHejuRead = 0
@@ -126,23 +132,23 @@ function createQuota({ enabled, home, locate = findCodex, connect = withCodex, r
         if (source !== 'official') return selected
         const { account } = await call('account/read', { refreshToken: false })
         if (account?.type !== 'chatgpt') return { source: 'unsupported' }
-        return { source, quota: officialWindows(await call('account/rateLimits/read', { excludeResetCreditDetails: true }), now()) }
+        return { source, ...officialQuota(await call('account/rateLimits/read', { excludeResetCreditDetails: true }), now()) }
       })
       if (stopped) return
-      if (provider.source === 'heju' && provider.key) {
+      if (provider.source === 'thirdParty' && provider.key) {
         if (connectedKey !== provider.key) { nextHejuRead = 0; connectedKey = provider.key }
         if (now() < nextHejuRead) return
         const balance = await readHeju(provider.key, request)
         if (stopped) return
         if (balance?.retryAfter) nextHejuRead = now() + balance.retryAfter
-        state = { source, quota: [], balance: balance?.unit ? balance : null, revision: state.revision + 1 }
+        state = { source, quota: [], balance: Number.isFinite(balance?.remaining) ? balance : null, credits: null, revision: state.revision + 1 }
       } else {
         connectedKey = undefined
         nextHejuRead = 0
-        state = { source: provider.source, quota: provider.quota || [], balance: null, revision: state.revision + 1 }
+        state = { source: provider.source, quota: provider.quota || [], balance: null, credits: provider.credits ?? null, revision: state.revision + 1 }
       }
     } catch {
-      if (!stopped) state = { source, quota: [], balance: null, revision: state.revision + 1 }
+      if (!stopped) state = { source, quota: [], balance: null, credits: null, revision: state.revision + 1 }
     } finally {
       if (enabled && !stopped) {
         timer = setTimeout(refresh, Math.max(1000, minute - (now() - began)))

@@ -123,7 +123,7 @@ function followCodex(win) {
   function syncWindow() {
     if (win.isDestroyed()) return
     if (bounds && !paused) {
-      win.setBounds(bounds)
+      win.setBounds(screen.screenToDipRect(null, bounds))
       if (!win.isVisible()) win.showInactive()
     } else if (win.isVisible()) {
       win.hide()
@@ -133,7 +133,7 @@ function followCodex(win) {
     if (win.isDestroyed()) return
     try {
       const { visible, x, y, width, height } = JSON.parse(message)
-      bounds = visible ? screen.screenToDipRect(null, { x, y, width, height }) : null
+      bounds = visible ? { x, y, width, height } : null
       syncWindow()
     } catch (error) {
       console.error('Closure window tracker:', error.message)
@@ -141,7 +141,12 @@ function followCodex(win) {
   })
   tracker.stderr.on('data', (chunk) => console.error(chunk.toString()))
   tracker.on('error', (error) => console.error('Closure window tracker:', error.message))
-  tracker.once('exit', () => { bounds = null; syncWindow() })
+  tracker.once('close', () => {
+    if (win.isDestroyed()) return
+    bounds = null
+    syncWindow()
+    if (noTray) app.quit()
+  })
   if (!noTray) {
     const tray = new Tray(path.join(__dirname, 'upstream', 'icon.png'))
     tray.setToolTip('可露希尔 · Codex 桌宠')
@@ -151,7 +156,11 @@ function followCodex(win) {
     ]))
     win.once('closed', () => tray.destroy())
   }
-  win.once('closed', () => tracker.kill())
+  screen.on('display-metrics-changed', syncWindow)
+  win.once('closed', () => {
+    screen.removeListener('display-metrics-changed', syncWindow)
+    tracker.kill()
+  })
 }
 
 function registerInput(win) {
@@ -233,15 +242,15 @@ async function runSmoke(win) {
     const bubble = document.querySelector('#dsh-closure-pet-bubble')
     const clicked = bubble.style.opacity === '1'
     const bubbleText = bubble.textContent
-    const dialogueCues = ['黑眼圈', '我还在算', '烧烤味饼干', '巧克力', '滞销', '不许砍价', '奖励一下']
+    const dialogueCues = ['黑眼圈', '烧烤味饼干', '不许砍价']
     const idleDialogueCount = dialogueCues.length
     const idleLines = [bubbleText]
     for (let i = 1; i < idleDialogueCount; i++) {
       click()
       idleLines.push(bubble.textContent)
     }
-    // 0.2 would select the previous round's last line as the next first line.
-    clickWithRandom(0.2)
+    // This would repeat the last line without the boundary check.
+    clickWithRandom(0.5)
     const secondRound = [bubble.textContent]
     for (let i = 1; i < idleDialogueCount; i++) {
       click()
@@ -250,13 +259,22 @@ async function runSmoke(win) {
     const dialogueCycles = new Set(idleLines).size === idleDialogueCount &&
       dialogueCues.every((cue) => idleLines.some((line) => line.replace(/\\s+/g, '').includes(cue))) &&
       new Set(secondRound).size === idleDialogueCount && secondRound.every((line) => idleLines.includes(line)) &&
-      idleLines.join('\u0001') !== secondRound.join('\u0001') && idleLines.at(-1) !== secondRound[0]
+      idleLines.at(-1) !== secondRound[0]
     const lineBeforeRefresh = bubble.textContent
     await new Promise((done) => setTimeout(done, 1100))
     const dialogueSurvivesRefresh = bubble.textContent === lineBeforeRefresh
     document.dispatchEvent(new MouseEvent('contextmenu', { clientX: point.x, clientY: point.y, cancelable: true }))
     const settings = document.querySelector('#dsh-closure-pet-settings')
     const panelOpened = getComputedStyle(settings).display === 'block'
+    const notification = [...settings.querySelectorAll('details')].find((item) => item.querySelector('summary').textContent === '提醒与播报')
+    notification.open = true
+    const quotaOption = notification.querySelector('button[data-minutes="5"]')
+    quotaOption.click()
+    for (const control of notification.querySelectorAll('input[type=checkbox]')) control.click()
+    const notificationSettings = JSON.parse(localStorage.getItem('dshcl-settings'))
+    const notificationsSaved = quotaOption.getAttribute('aria-pressed') === 'true' &&
+      notificationSettings.quotaReminderMinutes === 5 && !notificationSettings.startupVoice &&
+      !notificationSettings.completionVoice && !notificationSettings.toolFailureNotice
     const voiceControl = settings.querySelector('[aria-label="角色配音"]')
     const voiceLanguages = [...settings.querySelectorAll('button[data-voice-language]')]
     const defaultVoice = voiceControl.checked && voiceLanguages.find(
@@ -332,26 +350,42 @@ async function runSmoke(win) {
     const talking = pet.layers.work === 'Talk'
     click(hitPoint())
     const workText = bubble.textContent.replace(/\\s+/g, '')
-    const workDialogueWithQuota = dialogueCues.some((cue) => workText.includes(cue)) && workText.includes('85.5%')
-    pet.applyState({ closureCompanion: { source: 'heju', balance: { remaining: 120.5, unit: 'USD' }, quota: [] }, work: { mode: 'idle' } })
-    const hasBalanceInRotation = Array.from({ length: idleDialogueCount + 1 }, () => {
+    const workDialogueWithQuota = ['我还在算', '巧克力'].some((cue) => workText.includes(cue)) && workText.includes('85.5%')
+    const tokenUsage = { total: 12480, turn: 900 }
+    pet.applyState({ closureCompanion: { source: 'thirdParty', balance: { remaining: 120.5, unit: 'USD' }, quota: [], tokenUsage }, work: { mode: 'idle' } })
+    const hasBalanceInRotation = Array.from({ length: 8 }, () => {
       click(hitPoint())
-      return bubble.textContent.replace(/\\s+/g, '').includes('合聚账号余额120.50USD')
+      const text = bubble.textContent.replace(/\\s+/g, '')
+      return text.includes('喏，博士，这次的用量在这儿。') && text.includes('账户余额120.50USD') &&
+        text.includes('这段对话共用了12,480Token') && text.includes('这轮用了900Token')
     }).filter(Boolean).length === 1
+    pet.applyState({ closureCompanion: { quota }, work: { mode: 'idle' } })
+    const now = Date.now
+    let idleLineAfterFiveMinutes
+    try {
+      Date.now = () => now() + 300001
+      idleLineAfterFiveMinutes = Array.from({ length: 3 }, () => {
+        click(hitPoint())
+        return bubble.textContent.replace(/\\s+/g, '')
+      }).some((line) => line.includes('博士睡了'))
+    } finally {
+      Date.now = now
+    }
     pet.play('Idle', true)
-    pet.applyState({ closureCompanion: { quota, completed: true }, work: { mode: 'idle' }, turnEnd: { seq: 1, kind: 'completed' } })
+    pet.applyState({ closureCompanion: { source: 'official', quota, credits: { balance: '3.25' }, tokenUsage, completed: true }, work: { mode: 'idle' }, turnEnd: { seq: 1, kind: 'completed' } })
     const completionText = bubble.textContent.replace(/\\s+/g, '')
-    const completionDialogue = completionText.includes('奖励一下') && completionText.includes('85.5%')
+    const completionDialogue = completionText.includes('奖励一下') && completionText.includes('5小时额度还剩85.5%') &&
+      completionText.includes('ChatGPT积分还剩3.25') && completionText.includes('这轮用了900Token')
     pet.applyState({ closureCompanion: { quota }, work: { mode: 'outputting' } })
     pet.showValleySticker()
     const sticker = document.querySelector('#dsh-closure-pet-sticker canvas')
     const stickerPainted = Boolean(sticker?.getContext('2d').getImageData(20, 20, 1, 1).data[3])
-    return { dragged, clicked, panelOpened, voiceSettings, voiceVolumeWorks, voicesPlayed, expressionPreview, crtSettingsSaved, startupScheduled, thinking, talking, stickerPainted, dialogueCycles,
-      dialogueSurvivesRefresh, workDialogueWithQuota, hasBalanceInRotation, completionDialogue, completionText, bubbleText, workText, animations: pet.animations, sounds: pet.sounds }
+    return { dragged, clicked, panelOpened, notificationsSaved, voiceSettings, voiceVolumeWorks, voicesPlayed, expressionPreview, crtSettingsSaved, startupScheduled, thinking, talking, stickerPainted, dialogueCycles,
+      dialogueSurvivesRefresh, workDialogueWithQuota, hasBalanceInRotation, idleLineAfterFiveMinutes, completionDialogue, completionText, bubbleText, workText, animations: pet.animations, sounds: pet.sounds }
   })()`)
-  if (!result.dragged || !result.clicked || !result.panelOpened || !result.voiceSettings || !result.voiceVolumeWorks || !result.expressionPreview || !result.crtSettingsSaved || !result.startupScheduled || !result.thinking ||
+  if (!result.dragged || !result.clicked || !result.panelOpened || !result.notificationsSaved || !result.voiceSettings || !result.voiceVolumeWorks || !result.expressionPreview || !result.crtSettingsSaved || !result.startupScheduled || !result.thinking ||
       !result.talking || !result.stickerPainted || !result.dialogueCycles || !result.dialogueSurvivesRefresh || !result.workDialogueWithQuota ||
-      !result.hasBalanceInRotation || !result.completionDialogue) {
+      !result.hasBalanceInRotation || !result.idleLineAfterFiveMinutes || !result.completionDialogue) {
     throw new Error(`Interaction check failed: ${JSON.stringify(result)}`)
   }
   const preview = await win.webContents.capturePage()
@@ -387,6 +421,7 @@ if (!smoke && !app.requestSingleInstanceLock()) {
     if (!dev) {
       registerInput(win)
       followCodex(win)
+      if (noTray) win.webContents.once('render-process-gone', () => app.quit())
     }
     await win.loadURL(`${origin}/${canvas ? '?canvas=1' : ''}`)
     if (demo) win.show()
@@ -396,7 +431,7 @@ if (!smoke && !app.requestSingleInstanceLock()) {
     }
   }).catch((error) => {
     console.error(error)
-    if (!smoke) dialog.showErrorBox('Closure Companion', error.message)
+    if (!smoke) dialog.showErrorBox('Closure Companion', '嗯？我这边没启动起来。博士，桌宠初始化失败了。')
     app.exit(1)
   })
 }

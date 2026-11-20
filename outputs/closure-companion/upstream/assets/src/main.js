@@ -34,7 +34,7 @@ import { createBubble, dialogue } from './ui/bubble.js'
 import { createSticker } from './ui/sticker.js'
 import { createDrag } from './input/drag.js'
 import { createDirector } from './anim/director.js'
-import { createState } from './io/state.js'
+import { createState, LOW_QUOTA_NOTICE } from './io/state.js'
 
 (function () {
   if (window.__dshClosurePet) return
@@ -58,7 +58,7 @@ import { createState } from './io/state.js'
   host.appendChild(canvas)
 
   var note = document.createElement('div')
-  note.style.cssText = 'display:none;font:11px/1.4 ui-sans-serif,system-ui,"Microsoft YaHei",sans-serif;color:#ff8f8f;text-align:center;max-width:280px'
+  note.style.cssText = 'display:none;font:11px/1.4 ui-sans-serif,system-ui,"Microsoft YaHei",sans-serif;color:#ff8f8f;text-align:center;max-width:280px;white-space:pre-line;overflow-wrap:anywhere'
   host.appendChild(note)
 
   function mount() {
@@ -70,13 +70,13 @@ import { createState } from './io/state.js'
   if (document.body) mount()
   else document.addEventListener('DOMContentLoaded', mount, { once: true })
 
-  function fail(text) {
+  function fail() {
     window.__dshClosurePet.phase = 'failed'
-    window.__dshClosurePet.error = text
-    note.textContent = text
+    window.__dshClosurePet.error = '桌宠资源或渲染组件初始化失败。'
+    note.textContent = '嗯？我这边没启动起来。博士，你看这条报错。\n' + window.__dshClosurePet.error
     note.style.display = 'block'
     host.style.opacity = '1'
-    warn(text)
+    warn(window.__dshClosurePet.error)
   }
 
   var pet = {
@@ -424,12 +424,12 @@ import { createState } from './io/state.js'
         startupHold = false
         if (layers.overlay) return // 空档里已经有别的覆盖动画了，不打断
         playOverlay('Sad_Begin', undefined, function () {
-          showBubble(p.companion ? '博士！额度快见底了！' : '博士！预算快见底了\n该批经费啦！')
+          showBubble(p.companion ? LOW_QUOTA_NOTICE : '博士！预算快见底了\n该批经费啦！')
           playSound('fail')
         })
       }, STARTUP_GAP)
     }, function () {
-      bubbleApi.showDialogue('greeting')
+      bubbleApi.showDialogue('greeting', 'info', settings.startupVoice)
     })
   }
 
@@ -472,6 +472,7 @@ import { createState } from './io/state.js'
   })
   bubbleApi = createBubble({
     getState: function () { return stateApi ? stateApi.getState() : null }, pet: pet, size: size, settings: settings, audio,
+    getIdleDuration: () => stateApi.getIdleDuration(),
   })
   stickerApi = createSticker({
     getState: function () { return stateApi ? stateApi.getState() : null }, pet: pet, size: size, settings: settings,
@@ -479,7 +480,7 @@ import { createState } from './io/state.js'
   stateApi = createState({
     layers: layers, playOverlay: playOverlay, syncAnimation: syncAnimation,
     showBubble: showBubble, showQuota: bubbleApi.showQuota, refreshBubble: refreshBubble, playSound: playSound,
-    showCompletion: () => bubbleApi.showDialogue('victory', 'completion'),
+    showCompletion: () => bubbleApi.showDialogue('victory', 'completion', settings.completionVoice),
     scheduleStartup: scheduleStartup,
     settings: settings, saveSettings: saveSettings,
     layout: layout, repositionForAnchor: repositionForAnchor,
@@ -685,8 +686,8 @@ import { createState } from './io/state.js'
           }
         },
       }
-    } catch (err) {
-      fail('桌宠加载失败：' + String((err && err.message) || err))
+    } catch {
+      fail()
     }
   })()
 

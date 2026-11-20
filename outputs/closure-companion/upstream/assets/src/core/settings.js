@@ -30,6 +30,8 @@ export function saveSettings(immediate) {
       bubble: settings.bubble, opacity: settings.opacity,
       sound: settings.sound, volume: settings.volume,
       voice: settings.voice, voiceLanguage: settings.voiceLanguage, voiceVolume: settings.voiceVolume,
+      startupVoice: settings.startupVoice, completionVoice: settings.completionVoice,
+      toolFailureNotice: settings.toolFailureNotice, quotaReminderMinutes: settings.quotaReminderMinutes,
     }))
   } catch (err) {}
   // 同时写回宿主（$DSH_HOME/.dshcl.json），换浏览器/清缓存也能恢复

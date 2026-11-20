@@ -15,19 +15,34 @@ export const dialogue = Object.freeze({
   shop: '采购部这么多种类的零食，当然是有特殊渠道才能买到啦！当年为了修好罗德岛，我搞来了哥伦比亚最先进的全自动装配线，殿下这才让我负责采购的。所以，为了支持采购部的工作，不许砍价！',
   victory: '博士，大家表现得这么好，是不是应该采购点东西奖励一下？',
 })
-const dialogueIds = Object.keys(dialogue)
+const clickDialogue = {
+  working: ['tap', 'screen'],
+  ready: ['greeting', 'snack', 'shop'],
+  resting: ['snack', 'shop', 'idle'],
+}
 
 export function quotaLines(state) {
   const companion = state?.closureCompanion
-  if (companion?.source === 'heju') {
+  const lines = []
+  if (companion?.source === 'thirdParty') {
     const balance = companion.balance
-    return balance ? [`合聚账号余额 ${balance.remaining.toFixed(2)} ${balance.unit}`] : []
+    if (balance) lines.push([`账户余额 ${balance.remaining.toFixed(2)}`, balance.unit].filter(Boolean).join(' '))
+  } else {
+    for (const { minutes, remaining } of companion?.quota || []) {
+      const window = minutes % 1440 === 0 ? minutes / 1440 + ' 天'
+        : minutes % 60 === 0 ? minutes / 60 + ' 小时' : minutes + ' 分钟'
+      lines.push(`${window}额度还剩 ${Math.round(remaining * 10) / 10}%`)
+    }
+    if (companion?.credits) {
+      lines.push(`ChatGPT 积分${companion.credits.unlimited ? '不限量' : '还剩 ' + companion.credits.balance}`)
+    }
   }
-  return (companion?.quota || []).map(({ minutes, remaining }) => {
-    const window = minutes % 1440 === 0 ? minutes / 1440 + ' 天'
-      : minutes % 60 === 0 ? minutes / 60 + ' 小时' : minutes + ' 分钟'
-    return `${window}额度剩余 ${Math.round(remaining * 10) / 10}%`
-  })
+  const usage = companion?.tokenUsage
+  if (usage) {
+    if (usage.turn !== null) lines.push(`这轮用了 ${usage.turn.toLocaleString('zh-CN')} Token`)
+    lines.push(`这段对话共用了 ${usage.total.toLocaleString('zh-CN')} Token`)
+  }
+  return lines
 }
 
 export function createBubble(deps) {
@@ -73,6 +88,8 @@ export function createBubble(deps) {
   var interactionText = ''
   let remainingDialogue = []
   let lastDialogue
+  let lastContext
+  let clicksSinceQuota = 0
   var bubbleMode = 'info'   // 'event'（事件反馈，过期即收）| 'info'（点击查看，常驻 5.2s）
 
   function ensureFont() {
@@ -244,7 +261,10 @@ export function createBubble(deps) {
     if (bubbleEventText && Date.now() < bubbleEventUntil) return [bubbleEventText]
     var lines = []
     var s = getState()
-    if (bubbleMode === 'quota') return quotaLines(s)
+    if (bubbleMode === 'quota') {
+      const usage = quotaLines(s)
+      return usage.length ? ['喏，博士，这次的用量在这儿。', ...usage] : []
+    }
     if (interactionText) lines.push(interactionText)
     if (s && s.closureCompanion) {
       if (bubbleMode === 'completion' || !interactionText || !s.closureCompanion.source) lines.push(...quotaLines(s))
@@ -340,8 +360,20 @@ export function createBubble(deps) {
 
   function showInteraction() {
     if (!settings.bubble) return
+    const state = getState()
+    if (clicksSinceQuota >= 7 && state?.closureCompanion?.source && showQuota()) {
+      clicksSinceQuota = 0
+      return
+    }
+    const mode = state?.work?.mode
+    const context = mode === 'thinking' || mode === 'outputting' ? 'working'
+      : deps.getIdleDuration() >= 300000 ? 'resting' : 'ready'
+    if (context !== lastContext) {
+      remainingDialogue = []
+      lastContext = context
+    }
     if (!remainingDialogue.length) {
-      remainingDialogue = [...dialogueIds]
+      remainingDialogue = [...clickDialogue[context]]
       for (let i = remainingDialogue.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1))
         ;[remainingDialogue[i], remainingDialogue[j]] = [remainingDialogue[j], remainingDialogue[i]]
@@ -351,15 +383,16 @@ export function createBubble(deps) {
         const other = Math.floor(Math.random() * next)
         ;[remainingDialogue[next], remainingDialogue[other]] = [remainingDialogue[other], remainingDialogue[next]]
       }
-      if (lastDialogue && getState()?.closureCompanion?.source && showQuota()) return
     }
     lastDialogue = remainingDialogue.pop()
+    clicksSinceQuota = Math.min(7, clicksSinceQuota + 1)
     showDialogue(lastDialogue)
   }
 
-  function showDialogue(id, mode = 'info') {
+  function showDialogue(id, mode = 'info', playVoice = true) {
     if (!settings.bubble) return
     showBubble(null, null, dialogue[id], mode)
+    if (!playVoice) return
     audio.playVoice(id, (duration) => {
       scheduleHide(Math.max(BUBBLE_HIDE_MS, duration + 250))
     }).catch(() => {})
