@@ -87,6 +87,7 @@ $workRoot = [IO.Path]::GetFullPath((Join-Path $outputRoot '../work'))
 $crtExe = Join-Path $outputRoot 'closure-crt/ClosureCrt.exe'
 $petApp = Join-Path $outputRoot 'closure-companion'
 $electronExe = Join-Path $workRoot 'companion-runtime/electron/electron.exe'
+$launchModePath = Join-Path $workRoot 'companion-profile/launch-mode.txt'
 $knownProcesses = @{}
 
 function Test-CodexOpen {
@@ -143,8 +144,8 @@ function Write-LifecycleLog($message) {
     } catch { Write-Verbose 'Could not write the lifecycle log.' }
 }
 
-function Update-Helpers($children, $recovery, [long] $now) {
-    foreach ($key in 'Crt', 'Pet') {
+function Update-Helpers($children, $recovery, [long] $now, $keys = @('Crt', 'Pet'), [bool] $standalone = $false) {
+    foreach ($key in $keys) {
         $state = $recovery[$key]
         $process = $children[$key]
         if ($process) {
@@ -153,10 +154,15 @@ function Update-Helpers($children, $recovery, [long] $now) {
                 continue
             }
             $code = try { $process.ExitCode } catch [InvalidOperationException] { 'unknown' }
-            Write-LifecycleLog "$key exited with code $code while Codex was open."
+            if ($key -eq 'Pet' -and $standalone) {
+                Write-LifecycleLog "$key exited with code $code in standalone mode."
+            } else {
+                Write-LifecycleLog "$key exited with code $code while Codex was open."
+            }
             $process.Dispose()
             $children[$key] = $null
-            $state.Due = $now + 1000
+            if ($key -eq 'Pet' -and $standalone -and $code -eq 0) { $state.Due = [long]::MaxValue }
+            else { $state.Due = $now + 1000 }
         }
         if ($state.Attempts -ge 4 -or $now -lt $state.Due) { continue }
 
@@ -175,8 +181,8 @@ function Update-Helpers($children, $recovery, [long] $now) {
     }
 }
 
-function Stop-Helpers($children) {
-    foreach ($key in 'Crt', 'Pet') {
+function Stop-Helpers($children, $keys = @('Crt', 'Pet')) {
+    foreach ($key in $keys) {
         $process = $children[$key]
         if (!$process) { continue }
         try {
@@ -206,24 +212,44 @@ try {
     $signal = [Threading.EventWaitHandle]::new($false, [Threading.EventResetMode]::ManualReset, $stopName)
     $clock = [Diagnostics.Stopwatch]::StartNew()
     $lastOpen = $null
+    $required = @{ Crt = $false; Pet = $false }
+    $recovery = @{}
+    $previousStandalone = $false
     do {
-        if (Test-CodexOpen) {
-            if ($null -eq $lastOpen) {
-                $children = Find-OpenHelpers
-                $recovery = @{
-                    Crt = @{ Attempts = [int][bool]$children.Crt; Started = $clock.ElapsedMilliseconds; Due = 0 }
-                    Pet = @{ Attempts = [int][bool]$children.Pet; Started = $clock.ElapsedMilliseconds; Due = 0 }
-                }
-            }
-            $lastOpen = $clock.ElapsedMilliseconds
-            Update-Helpers $children $recovery $lastOpen
-        } elseif ($null -ne $lastOpen -and $clock.ElapsedMilliseconds - $lastOpen -ge 1500) {
-            Stop-Helpers $children
-            $lastOpen = $null
+        $now = $clock.ElapsedMilliseconds
+        if (Test-CodexOpen) { $lastOpen = $now }
+        $codexOpen = $null -ne $lastOpen -and $now - $lastOpen -lt 1500
+        $standalone = $previousStandalone
+        try {
+            $standalone = [IO.File]::ReadAllText($launchModePath).Trim() -eq 'standalone'
+        } catch [IO.FileNotFoundException], [IO.DirectoryNotFoundException] {
+            $standalone = $false
+        } catch [IO.IOException] {
+            # Use the last mode if the settings file is temporarily unavailable.
         }
+        $needed = @{ Crt = $codexOpen; Pet = $codexOpen -or $standalone }
+        foreach ($key in 'Crt', 'Pet') {
+            if (!$needed[$key]) {
+                if ($children[$key]) { Stop-Helpers $children @($key) }
+            } else {
+                if (!$required[$key] -or ($key -eq 'Pet' -and $standalone -ne $previousStandalone)) {
+                    if (!$children[$key]) { $children[$key] = (Find-OpenHelpers)[$key] }
+                    $recovery[$key] = @{ Attempts = [int][bool]$children[$key]; Started = $now; Due = 0 }
+                }
+                Update-Helpers $children $recovery $now @($key) $standalone
+            }
+            $required[$key] = $needed[$key]
+        }
+        $previousStandalone = $standalone
     } until ($signal.WaitOne(350))
 } finally {
     if ($ownsMutex) {
+        if (!$children.Pet -or !$children.Crt) {
+            $running = Find-OpenHelpers
+            foreach ($key in 'Crt', 'Pet') {
+                if (!$children[$key]) { $children[$key] = $running[$key] }
+            }
+        }
         Stop-Helpers $children
         if ($signal) { $signal.Dispose() }
         $mutex.ReleaseMutex()

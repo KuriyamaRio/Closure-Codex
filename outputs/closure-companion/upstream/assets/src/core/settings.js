@@ -31,6 +31,7 @@ export function saveSettings(immediate) {
       sound: settings.sound, volume: settings.volume,
       voice: settings.voice, voiceLanguage: settings.voiceLanguage, voiceVolume: settings.voiceVolume,
       voiceQueueMode: settings.voiceQueueMode, voiceQueues: settings.voiceQueues,
+      standaloneVoiceQueueMode: settings.standaloneVoiceQueueMode, standaloneVoiceQueue: settings.standaloneVoiceQueue,
       toolFailureNotice: settings.toolFailureNotice, quotaReminderMinutes: settings.quotaReminderMinutes,
     }))
   } catch (err) {}

@@ -49,4 +49,9 @@ foreach ($at in 63000,64000,65000,66000,67000,68000,69000) {
 Assert-Test ($launches.Count -eq 7 -and $children.Pet -eq $pet) 'Repeated startup failures must stop at the retry limit.'
 Assert-Test ($logs -contains 'Crt exited with code 17 while Codex was open.') 'Record the process exit.'
 Assert-Test (($logs -like '*reached its launch limit*').Count -eq 1) 'Record the retry limit once.'
+$pet.ExitCode = 0
+$pet.HasExited = $true
+Update-Helpers $children $recovery 70000 @('Pet') $true
+Update-Helpers $children $recovery 80000 @('Pet') $true
+Assert-Test (!$children.Pet -and $launches.Count -eq 7) 'An intentional standalone exit should stay closed.'
 'Lifecycle recovery passed.'

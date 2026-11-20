@@ -18,6 +18,7 @@ const profile = process.env.CLOSURE_STATE_DIR || path.join(__dirname, '.closure-
 const assets = path.join(__dirname, 'upstream', 'assets')
 const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), '.codex')
 const crtSettingsPath = process.env.CLOSURE_CRT_SETTINGS_FILE || path.resolve(__dirname, '../../work/crt-settings.ini')
+const launchModePath = path.join(profile, 'launch-mode.txt')
 const defaultCrt = { scanlines: true, vignette: true, strength: 100, appearance: 'system', dshChrome: true }
 let crtWrite = Promise.resolve()
 
@@ -67,7 +68,7 @@ async function updateCrt(request) {
   return Response.json(value)
 }
 
-function registerProtocol(activity, quota) {
+function registerProtocol(getActivityState) {
   protocol.handle(scheme, async (request) => {
     const url = new URL(request.url)
     if (url.hostname !== 'local') return new Response(null, { status: 404 })
@@ -84,9 +85,7 @@ function registerProtocol(activity, quota) {
     if (url.pathname === '/dsh-closure/config' && request.method === 'PUT') return new Response(null, { status: 204 })
     if (request.method !== 'GET') return new Response(null, { status: 405 })
     if (url.pathname === '/dsh-closure/state') {
-      const snapshot = activity.snapshot()
-      if (quota) Object.assign(snapshot.closureCompanion, quota.snapshot())
-      return Response.json(snapshot)
+      return Response.json(getActivityState())
     }
     if (url.pathname === '/dsh-closure/config') return Response.json({})
 
@@ -106,7 +105,7 @@ function registerProtocol(activity, quota) {
   })
 }
 
-function followCodex(win) {
+function followCodex(win, report, onLost) {
   const powershell = path.join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
   const handle = win.getNativeWindowHandle()
   const overlayHandle = handle.length === 8 ? handle.readBigUInt64LE() : handle.readUInt32LE()
@@ -118,23 +117,12 @@ function followCodex(win) {
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   const lines = readline.createInterface({ input: tracker.stdout })
-  let bounds
-  let paused = false
-  function syncWindow() {
-    if (win.isDestroyed()) return
-    if (bounds && !paused) {
-      win.setBounds(screen.screenToDipRect(null, bounds))
-      if (!win.isVisible()) win.showInactive()
-    } else if (win.isVisible()) {
-      win.hide()
-    }
-  }
+  let stopped = false
   lines.on('line', (message) => {
-    if (win.isDestroyed()) return
+    if (stopped || win.isDestroyed()) return
     try {
       const { visible, x, y, width, height } = JSON.parse(message)
-      bounds = visible ? { x, y, width, height } : null
-      syncWindow()
+      report(visible ? { x, y, width, height } : null)
     } catch (error) {
       console.error('Closure window tracker:', error.message)
     }
@@ -142,25 +130,99 @@ function followCodex(win) {
   tracker.stderr.on('data', (chunk) => console.error(chunk.toString()))
   tracker.on('error', (error) => console.error('Closure window tracker:', error.message))
   tracker.once('close', () => {
-    if (win.isDestroyed()) return
-    bounds = null
-    syncWindow()
-    if (noTray) app.quit()
+    if (!stopped && !win.isDestroyed()) onLost()
   })
-  if (!noTray) {
-    const tray = new Tray(path.join(__dirname, 'upstream', 'icon.png'))
-    tray.setToolTip('可露希尔 · Codex 桌宠')
+  return () => {
+    stopped = true
+    lines.close()
+    tracker.kill()
+  }
+}
+
+function managePetWindow(win) {
+  let mode = 'codex'
+  let desktopDisplay
+  let codexBounds
+  let stopTracker
+  let paused = false
+  let ready = false
+  let loaded = false
+  let tray
+
+  function syncWindow() {
+    if (win.isDestroyed()) return
+    let bounds
+    if (mode === 'standalone') {
+      const display = screen.getAllDisplays().find(({ id }) => id === desktopDisplay) || screen.getPrimaryDisplay()
+      desktopDisplay = display.id
+      bounds = display.workArea
+    } else if (codexBounds) {
+      bounds = screen.screenToDipRect(null, codexBounds)
+    }
+    if (bounds) win.setBounds(bounds)
+    if (ready && bounds && !paused) {
+      if (!win.isVisible()) win.showInactive()
+    } else if (win.isVisible()) {
+      win.hide()
+    }
+  }
+
+  function syncTray() {
+    if (mode === 'codex' && noTray) {
+      tray?.destroy()
+      tray = undefined
+      return
+    }
+    if (!tray) {
+      tray = new Tray(path.join(__dirname, 'upstream', 'icon.png'))
+      tray.setToolTip('可露希尔 · Codex 桌宠')
+    }
     tray.setContextMenu(Menu.buildFromTemplate([
-      { label: '显示桌宠', type: 'checkbox', checked: true, click: (item) => { paused = !item.checked; syncWindow() } },
+      { label: '显示桌宠', type: 'checkbox', checked: !paused, click: (item) => { paused = !item.checked; syncWindow() } },
       { label: '退出可露希尔桌宠', click: () => app.quit() },
     ]))
-    win.once('closed', () => tray.destroy())
   }
-  screen.on('display-metrics-changed', syncWindow)
+  const displayEvents = ['display-metrics-changed', 'display-added', 'display-removed']
+  displayEvents.forEach((event) => screen.on(event, syncWindow))
   win.once('closed', () => {
-    screen.removeListener('display-metrics-changed', syncWindow)
-    tracker.kill()
+    displayEvents.forEach((event) => screen.removeListener(event, syncWindow))
+    stopTracker?.()
+    tray?.destroy()
   })
+
+  return async (nextMode) => {
+    stopTracker?.()
+    if (nextMode === 'standalone') {
+      const display = loaded && win.isVisible()
+        ? screen.getDisplayMatching(win.getBounds()) : screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
+      desktopDisplay = display.id
+    }
+    mode = nextMode
+    paused = false
+    codexBounds = null
+    ready = false
+    syncTray()
+    if (mode === 'codex') {
+      stopTracker = followCodex(win, (bounds) => {
+        codexBounds = bounds
+        syncWindow()
+      }, () => {
+        codexBounds = null
+        syncWindow()
+        if (noTray) app.quit()
+      })
+    } else {
+      stopTracker = undefined
+    }
+    syncWindow()
+    const query = new URLSearchParams()
+    if (canvas) query.set('canvas', '1')
+    if (mode === 'standalone') query.set('mode', mode)
+    await win.loadURL(`${origin}/?${query}`)
+    loaded = true
+    ready = true
+    syncWindow()
+  }
 }
 
 function registerInput(win) {
@@ -170,6 +232,10 @@ function registerInput(win) {
     if (win.isDestroyed() || event.sender !== win.webContents || enabled === interactive) return
     interactive = enabled
     win.setIgnoreMouseEvents(!interactive)
+  })
+  win.webContents.on('did-finish-load', () => {
+    interactive = false
+    win.setIgnoreMouseEvents(true)
   })
   const timer = setInterval(() => {
     if (win.isDestroyed() || !win.isVisible()) return
@@ -193,6 +259,7 @@ async function runSmoke(win) {
 
   const result = await evaluate(`(async () => {
     const pet = window.__dshClosurePet
+    const { DEFAULT_VOICE_QUEUES } = await import('/dsh-closure/assets/src/core/dialogue.js')
     const screenPet = document.querySelector('#dsh-closure-pet canvas')
     const hitPoint = () => {
       const bounds = screenPet.getBoundingClientRect()
@@ -238,17 +305,20 @@ async function runSmoke(win) {
     click()
     const bubble = document.querySelector('#dsh-closure-pet-bubble')
     const bubbleText = () => bubble.textContent.replace(/\\s+/g, '')
-    const clicked = bubble.style.opacity === '1' && bubbleText().includes('不许砍价') &&
+    const clicked = bubble.style.opacity === '1' && bubbleText().length > 0 &&
       !bubbleText().includes('85.5%') && !bubbleText().includes('Token') &&
-      await waitFor(() => pet.voice?.id === 'a02')
+      await waitFor(() => DEFAULT_VOICE_QUEUES.working.includes(pet.voice?.id))
     pet.applyState({ ...state(), userInput: { seq: 1, scene: 'question' } })
     const questionVoice = await waitFor(() => pet.voice?.id === 'b10') && bubbleText().includes('有晋升的机会')
     const answerVoices = []
-    for (const [index, id] of ['b12', 'b13', 'b14', 'b15', 'b12'].entries()) {
+    for (let index = 0; index < 5; index++) {
+      const previous = pet.voice?.id
       pet.applyState({ ...state(), userInput: { seq: index + 2, scene: 'answer' } })
-      answerVoices.push(await waitFor(() => pet.voice?.id === id))
+      await waitFor(() => DEFAULT_VOICE_QUEUES.answer.includes(pet.voice?.id) && pet.voice.id !== previous)
+      answerVoices.push(pet.voice?.id)
     }
-    const answerRotation = answerVoices.every(Boolean)
+    const answerRotation = answerVoices.slice(0, 4).sort().join() === 'b12,b13,b14,b15' &&
+      DEFAULT_VOICE_QUEUES.answer.includes(answerVoices[4]) && answerVoices[4] !== answerVoices[3]
     pet.hideBubble()
     document.dispatchEvent(new MouseEvent('contextmenu', { clientX: point.x, clientY: point.y, cancelable: true }))
     const settings = document.querySelector('#dsh-closure-pet-settings')
@@ -300,7 +370,7 @@ async function runSmoke(win) {
     const defaultOverridesPersonal = list().join() === expectedQueues.start &&
       getSavedSettings().voiceQueues.start.length === 0 &&
       editor.querySelector('[data-add-voice="a01"]').disabled &&
-      await waitFor(() => pet.voice?.id === 'a18')
+      await waitFor(() => DEFAULT_VOICE_QUEUES.start.includes(pet.voice?.id))
     personalMode.click()
     pet.hideBubble()
     pet.applyState(state())
@@ -311,8 +381,6 @@ async function runSmoke(win) {
     add('a18')
     add('a19')
     add('a01')
-    editor.querySelector('[data-queued-voice="a19"] button').click()
-    const ordered = list().join() === 'a19,a18,a01'
     remove('a01')
     for (const [scene, clip] of Object.entries({ working: 'a23', completion: 'a30', startup: 'b01', idle: 'b03' })) {
       selectScene(scene)
@@ -323,10 +391,10 @@ async function runSmoke(win) {
     add('a34')
     selectScene('start')
     const savedQueues = getSavedSettings().voiceQueues
-    const queueEditor = fullCatalog && filterWorks && emptyPersonalQueues && emptyDoesNotSpeak && ordered &&
-      list().join() === 'a19,a18' && !editor.querySelector('[data-add-voice="a01"]').disabled &&
+    const queueEditor = fullCatalog && filterWorks && emptyPersonalQueues && emptyDoesNotSpeak &&
+      list().join() === 'a18,a19' && !editor.querySelector('[data-add-voice="a01"]').disabled &&
       editor.querySelector('[data-add-voice="a19"]').disabled &&
-      savedQueues.start.join() === 'a19,a18' && savedQueues.working.join() === 'a23,a34' &&
+      savedQueues.start.join() === 'a18,a19' && savedQueues.working.join() === 'a23,a34' &&
       savedQueues.completion.join() === 'a30' && savedQueues.startup.join() === 'b01' && savedQueues.idle.join() === 'b03'
 
     const voiceControl = settings.querySelector('[aria-label="角色配音"]')
@@ -350,14 +418,16 @@ async function runSmoke(win) {
       const base = clock()
       Date.now = () => base
       pet.applyState(toolState(2))
-      toolVoice = await waitFor(() => pet.voice?.id === 'a31') &&
-        bubbleText().includes('web.search报错了') && bubbleText().includes('HTTP429') && bubbleText().includes('追踪设备')
+      toolVoice = await waitFor(() => DEFAULT_VOICE_QUEUES.toolFailure.includes(pet.voice?.id)) &&
+        bubbleText().includes('web.search报错了') && bubbleText().includes('HTTP429')
       if (!toolVoice) throw new Error(JSON.stringify({ voice: pet.voice, text: bubbleText(), layers: pet.layers,
         enabled: toolNotice.checked, audioEnabled: voiceControl.checked, hidden: document.hidden, saved: getSavedSettings().voiceQueues.toolFailure }))
+      const firstErrorVoice = pet.voice.id
       Date.now = () => base + 1500
       pet.play('Idle', true)
       pet.applyState(toolState(3))
-      toolVoiceRotates = await waitFor(() => pet.voice?.id === 'a32') && bubbleText().includes('挂钩释放')
+      toolVoiceRotates = await waitFor(() => pet.voice?.id === (firstErrorVoice === 'a31' ? 'a32' : 'a31')) &&
+        bubbleText().includes(firstErrorVoice === 'a31' ? '挂钩释放' : '追踪设备')
       personalMode.click()
       Date.now = () => base + 3000
       pet.play('Idle', true)
@@ -399,12 +469,13 @@ async function runSmoke(win) {
     const voiceVolumeWorks = mutedVoice && liveVoiceVolume && separateVolumes &&
       getSavedSettings().voiceVolume === 0.25 && getSavedSettings().volume === 0.5
     pet.applyState(state('thinking', 2))
-    const startVoice = await waitFor(() => pet.voice?.id === 'a19' && pet.voice.language === 'ko')
+    const startVoice = await waitFor(() => ['a18', 'a19'].includes(pet.voice?.id) && pet.voice.language === 'ko')
+    const firstStartVoice = pet.voice?.id
     const startText = bubbleText()
     click(hitPoint())
-    const clickKeepsDialogue = bubbleText() === startText && pet.voice?.id === 'a19'
+    const clickKeepsDialogue = bubbleText() === startText && pet.voice?.id === firstStartVoice
     pet.applyState(state('thinking', 3))
-    const startRotates = await waitFor(() => pet.voice?.id === 'a18')
+    const startRotates = await waitFor(() => pet.voice?.id === (firstStartVoice === 'a19' ? 'a18' : 'a19'))
     pet.openPanel()
     voiceControl.click()
     const voiceSettings = defaultVoice && voicesPlayed === 4 && languageFallback && previewStops && !pet.voice &&
@@ -440,6 +511,8 @@ async function runSmoke(win) {
     pet.play('Idle', true)
     const now = Date.now
     let workingDialogue, workingOnlyOnce, idleDialogue, idleOnlyOnce, completionDialogue, failedTurnSkipsCompletion
+    const workingCues = { a23: '零号油罐', a34: '别急，我还在算呢。' }
+    let firstWorkingVoice
     let elapsed = 0
     try {
       const base = now()
@@ -455,7 +528,8 @@ async function runSmoke(win) {
       const noEarlyWorking = bubble.style.opacity === '0'
       elapsed++
       pet.applyState(state('thinking', 4))
-      workingDialogue = noEarlyWorking && bubbleText().includes('零号油罐')
+      firstWorkingVoice = Object.keys(workingCues).find((id) => bubbleText().includes(workingCues[id]))
+      workingDialogue = noEarlyWorking && Boolean(firstWorkingVoice)
       pet.hideBubble()
       elapsed += 1_000
       pet.applyState(state('thinking', 4))
@@ -494,10 +568,11 @@ async function runSmoke(win) {
     click(hitPoint())
     const text = bubbleText()
     const noQuotaOnClick = !text.includes('账户余额') && !text.includes('Token')
-    const clickSharesWorkingQueue = text.includes('别急，我还在算呢。')
+    const otherWorkingVoice = firstWorkingVoice === 'a23' ? 'a34' : 'a23'
+    const clickSharesWorkingQueue = text.includes(workingCues[otherWorkingVoice])
     voiceControl.click()
     click(hitPoint())
-    const interactionRotates = await waitFor(() => pet.voice?.id === 'a23')
+    const interactionRotates = await waitFor(() => pet.voice?.id === firstWorkingVoice)
     pet.hideBubble()
     let automaticQuota, noQuotaSticker
     try {
@@ -537,7 +612,7 @@ async function runSmoke(win) {
     const { getVoiceQueues, normalizeSettings } = await import('/dsh-closure/assets/src/shared/protocol.js')
     const queues = settings.voiceQueues
     const oldProfile = normalizeSettings({ voiceQueues: { start: [] } })
-    return queues.start.join() === 'a19,a18' && queues.working.join() === 'a23,a34' &&
+    return queues.start.join() === 'a18,a19' && queues.working.join() === 'a23,a34' &&
       queues.completion.join() === 'a30' && queues.startup.join() === 'b01' && queues.idle.join() === 'b03' &&
       queues.toolFailure.length === 0 && settings.voiceQueueMode === 'default' &&
       getVoiceQueues(settings).start.join() === 'a18,a19,a21,a23,a24' &&
@@ -552,11 +627,21 @@ if (!smoke && !app.requestSingleInstanceLock()) {
   app.quit()
 } else {
   app.whenReady().then(async () => {
-    const followActivity = !dev && process.argv.includes('--follow-activity')
-    const activity = createActivity(followActivity, path.join(codexHome, 'sessions'))
-    const quota = followActivity ? createQuota({ enabled: true, home: codexHome }) : null
-    app.once('before-quit', () => { activity.stop(); quota?.stop() })
-    registerProtocol(activity, quota)
+    let activity
+    let quota
+    function configureActivity(mode) {
+      activity?.stop()
+      quota?.stop()
+      const followActivity = mode === 'codex' && !dev && process.argv.includes('--follow-activity')
+      activity = createActivity(followActivity, path.join(codexHome, 'sessions'))
+      quota = followActivity ? createQuota({ enabled: true, home: codexHome }) : null
+    }
+    app.once('before-quit', () => { activity?.stop(); quota?.stop() })
+    registerProtocol(() => {
+      const snapshot = activity.snapshot()
+      if (quota) Object.assign(snapshot.closureCompanion, quota.snapshot())
+      return snapshot
+    })
     session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false))
     session.defaultSession.webRequest.onBeforeRequest((details, callback) => callback({ cancel: new URL(details.url).protocol !== `${scheme}:` }))
     const win = new BrowserWindow({
@@ -574,10 +659,50 @@ if (!smoke && !app.requestSingleInstanceLock()) {
     win.webContents.on('will-navigate', (event) => event.preventDefault())
     if (!dev) {
       registerInput(win)
-      followCodex(win)
-      if (noTray) win.webContents.once('render-process-gone', () => app.quit())
+      win.webContents.once('render-process-gone', () => app.exit(1))
+      const showMode = managePetWindow(win)
+      let mode = 'codex'
+      try {
+        if ((await readFile(launchModePath, 'utf8')).trim() === 'standalone') mode = 'standalone'
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error
+      }
+      let switching = false
+      ipcMain.handle('closure:launch-mode', async (event, nextMode) => {
+        if (event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame ||
+            !['codex', 'standalone'].includes(nextMode) || switching) return false
+        if (nextMode === mode) return true
+        switching = true
+        try {
+          await mkdir(profile, { recursive: true })
+          const temporary = `${launchModePath}.${process.pid}.tmp`
+          await writeFile(temporary, nextMode + '\n', 'utf8')
+          await rename(temporary, launchModePath)
+        } catch (error) {
+          console.error('Closure launch mode:', error.message)
+          switching = false
+          return false
+        }
+        mode = nextMode
+        setImmediate(async () => {
+          try {
+            configureActivity(mode)
+            await showMode(mode)
+          } catch (error) {
+            console.error('Closure launch mode:', error.message)
+            app.exit(1)
+          } finally {
+            switching = false
+          }
+        })
+        return true
+      })
+      configureActivity(mode)
+      await showMode(mode)
+    } else {
+      configureActivity('codex')
+      await win.loadURL(`${origin}/${canvas ? '?canvas=1' : ''}`)
     }
-    await win.loadURL(`${origin}/${canvas ? '?canvas=1' : ''}`)
     if (demo) win.show()
     if (smoke) {
       await runSmoke(win)

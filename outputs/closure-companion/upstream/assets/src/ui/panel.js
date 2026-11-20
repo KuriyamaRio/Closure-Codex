@@ -51,6 +51,26 @@ export function createPanel(deps) {
       return el
     }
 
+    if (deps.setLaunchMode) {
+      const modeRow = row('运行模式')
+      const switchMode = document.createElement('button')
+      const label = deps.standalone ? '独立桌面' : 'Codex 联动'
+      switchMode.type = 'button'
+      switchMode.textContent = label
+      switchMode.setAttribute('aria-label', label + '，点击切换运行模式')
+      switchMode.style.cssText = 'padding:3px 9px;border-radius:6px;border:1px solid #545969;background:#525ca9;color:inherit;font:inherit;cursor:pointer'
+      switchMode.addEventListener('click', async () => {
+        switchMode.disabled = true
+        switchMode.textContent = '切换中…'
+        try {
+          if (await deps.setLaunchMode(deps.standalone ? 'codex' : 'standalone')) return
+        } catch {}
+        switchMode.textContent = '切换失败 · 重试'
+        switchMode.disabled = false
+      })
+      modeRow.appendChild(switchMode)
+    }
+
     // 镜像
     var mirrorRow = row('镜像')
     var segBox = document.createElement('span')
@@ -348,7 +368,7 @@ export function createPanel(deps) {
       if (crt.open && !savedCrt) updateCrt()
       positionPanel()
     })
-    if (location.protocol === 'closure-pet:') {
+    if (location.protocol === 'closure-pet:' && !deps.standalone) {
       panel.appendChild(crt)
       const notifications = document.createElement('details')
       notifications.style.cssText = previews.style.cssText

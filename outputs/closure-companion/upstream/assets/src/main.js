@@ -39,6 +39,7 @@ import { createState, LOW_QUOTA_NOTICE } from './io/state.js'
 (function () {
   if (window.__dshClosurePet) return
   window.__dshClosurePet = { phase: 'boot' }
+  const standalone = new URLSearchParams(location.search).get('mode') === 'standalone'
 
   // ————————————————————— 设置 —————————————————————
   // settings / loadSettings / saveSettings 见 core/settings.js（加载时已合并 localStorage）
@@ -326,7 +327,7 @@ import { createState, LOW_QUOTA_NOTICE } from './io/state.js'
       audio.stopVoice()
       closePanel()
       stop()
-      setPollInterval(5000) // 后台没必要 1s 拉一次状态
+      if (!standalone) setPollInterval(5000)
     } else {
       pet.lastTime = 0
       frameAcc = 0
@@ -334,8 +335,10 @@ import { createState, LOW_QUOTA_NOTICE } from './io/state.js'
       if (startupPending && startupPending.companion && !startupTimer) {
         startupTimer = setTimeout(runStartup, STARTUP_DELAY)
       }
-      setPollInterval(1000)
-      pollState()
+      if (!standalone) {
+        setPollInterval(1000)
+        pollState()
+      }
     }
   }
   document.addEventListener('visibilitychange', onVisibility)
@@ -460,6 +463,7 @@ import { createState, LOW_QUOTA_NOTICE } from './io/state.js'
   // ————————————————————— 组合：创建 UI 实例 —————————————————————
   // 此时函数声明已提升、var 别名都已赋值，依赖全部就绪。
   panelUi = createPanel({
+    standalone, setLaunchMode: window.closureCompanion?.setLaunchMode,
     settings: settings, saveSettings: saveSettings, resolveFlip: resolveFlip,
     layout: layout, repositionForAnchor: repositionForAnchor, applyOpacity: applyOpacity,
     hideBubble: hideBubble, audioEnsure: audioEnsure, loadSounds: loadSounds, playSound: playSound,
@@ -474,6 +478,7 @@ import { createState, LOW_QUOTA_NOTICE } from './io/state.js'
     size: size, pet: pet, resetPosition: resetPosition, preview: director.preview,
   })
   bubbleApi = createBubble({
+    standalone,
     getState: function () { return stateApi ? stateApi.getState() : null }, pet: pet, size: size, settings: settings, audio,
   })
   stickerApi = createSticker({
@@ -584,7 +589,7 @@ import { createState, LOW_QUOTA_NOTICE } from './io/state.js'
       applyOpacity()
       playLoop('Idle', true)
       start()
-      startPolling()
+      if (!standalone) startPolling()
       loadHostConfig()
       loadSounds()
       log('启动完成', names.length, 'animations · size', settings.size, '· mirror', settings.mirror)

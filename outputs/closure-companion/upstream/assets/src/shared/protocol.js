@@ -19,6 +19,7 @@ export const SIZE_MIN = 0.6
 export const SIZE_MAX = 2.0
 export const OPACITY_MIN = 0.3
 export const VOICE_LANGUAGES = Object.freeze({ zh: '中文（普通话）', ja: '日语', en: '英语', ko: '韩语' })
+export const STANDALONE_DEFAULT_VOICES = Object.freeze(Object.keys(dialogue))
 
 export const SETTINGS_DEFAULTS = Object.freeze({
   mirror: 'auto',
@@ -32,12 +33,22 @@ export const SETTINGS_DEFAULTS = Object.freeze({
   voiceVolume: 0.7,
   voiceQueueMode: 'default',
   voiceQueues: Object.freeze(Object.fromEntries(Object.keys(VOICE_SCENES).map((scene) => [scene, Object.freeze([])]))),
+  standaloneVoiceQueueMode: 'default',
+  standaloneVoiceQueue: Object.freeze([]),
   toolFailureNotice: true,
   quotaReminderMinutes: 1,
 })
 
 export function getVoiceQueues(settings) {
   return settings.voiceQueueMode === 'personal' ? settings.voiceQueues : DEFAULT_VOICE_QUEUES
+}
+
+export function getStandaloneVoiceQueue(settings) {
+  return settings.standaloneVoiceQueueMode === 'personal' ? settings.standaloneVoiceQueue : STANDALONE_DEFAULT_VOICES
+}
+
+function normalizeVoiceIds(ids) {
+  return [...new Set(ids.filter((id) => typeof id === 'string' && Object.hasOwn(dialogue, id)))]
 }
 
 /**
@@ -60,11 +71,15 @@ export function normalizeSettings(raw, base) {
   if (Number.isFinite(volume)) out.volume = Math.min(1, Math.max(0, volume))
   if (Number.isFinite(raw.voiceVolume)) out.voiceVolume = Math.min(1, Math.max(0, raw.voiceVolume))
   if (raw.voiceQueueMode === 'default' || raw.voiceQueueMode === 'personal') out.voiceQueueMode = raw.voiceQueueMode
+  if (raw.standaloneVoiceQueueMode === 'default' || raw.standaloneVoiceQueueMode === 'personal') {
+    out.standaloneVoiceQueueMode = raw.standaloneVoiceQueueMode
+  }
+  if (Array.isArray(raw.standaloneVoiceQueue)) out.standaloneVoiceQueue = normalizeVoiceIds(raw.standaloneVoiceQueue)
   if (raw.voiceQueues && typeof raw.voiceQueues === 'object') {
     out.voiceQueues = Object.fromEntries(Object.keys(VOICE_SCENES).map((scene) => {
       const ids = raw.voiceQueues[scene]
       return [scene, Array.isArray(ids)
-        ? [...new Set(ids.filter((id) => typeof id === 'string' && Object.hasOwn(dialogue, id)))]
+        ? normalizeVoiceIds(ids)
         : out.voiceQueues[scene]]
     }))
   }

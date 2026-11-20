@@ -7,7 +7,8 @@
 import { PREFIX } from '../core/env.js'
 
 import { dialogue } from '../core/dialogue.js'
-import { getVoiceQueues } from '../shared/protocol.js'
+import { getStandaloneVoiceQueue, getVoiceQueues } from '../shared/protocol.js'
+import { createVoiceRotation } from '../core/voice-rotation.js'
 
 export function quotaLines(state) {
   const companion = state?.closureCompanion
@@ -77,7 +78,7 @@ export function createBubble(deps) {
   var bubbleEventText = ''
   var bubbleEventUntil = 0
   var interactionText = ''
-  const lastVoiceByMode = { default: {}, personal: {} }
+  const nextVoice = createVoiceRotation()
   var bubbleMode = 'info'
 
   function ensureFont() {
@@ -347,17 +348,18 @@ export function createBubble(deps) {
 
   function showInteraction() {
     if (Date.now() < bubbleEventUntil || (taskDialogueShown && bubbleMode !== 'interaction')) return
-    showDialogue('working', '', 0, 'interaction')
+    showDialogue(deps.standalone ? 'standalone' : 'working', '', 0, 'interaction')
   }
 
   let taskDialogueShown = false
   function showDialogue(scene, eventText = '', eventMs = 0, mode = scene) {
-    const queue = getVoiceQueues(settings)[scene]
-    if (!queue.length || !settings.bubble || document.hidden || (!eventText && Date.now() < bubbleEventUntil)) return false
+    if (!settings.bubble || document.hidden || (!eventText && Date.now() < bubbleEventUntil)) return false
     if (taskDialogueShown && (mode === 'working' || mode === 'idle' || mode === 'startup')) return false
-    const lastVoice = lastVoiceByMode[settings.voiceQueueMode]
-    const id = queue[(queue.indexOf(lastVoice[scene]) + 1) % queue.length]
-    lastVoice[scene] = id
+    const standalone = scene === 'standalone'
+    const queue = standalone ? getStandaloneVoiceQueue(settings) : getVoiceQueues(settings)[scene]
+    const queueMode = standalone ? settings.standaloneVoiceQueueMode : settings.voiceQueueMode
+    const id = nextVoice(queueMode + ':' + scene, queue)
+    if (!id) return false
     showBubble(eventText, eventMs, dialogue[id][1], mode)
     taskDialogueShown = true
     audio.playVoice(id, (duration) => {

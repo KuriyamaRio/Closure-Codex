@@ -1,5 +1,5 @@
 import { dialogue, VOICE_SCENES } from '../core/dialogue.js'
-import { getVoiceQueues } from '../shared/protocol.js'
+import { getStandaloneVoiceQueue, getVoiceQueues } from '../shared/protocol.js'
 
 const buttonStyle = 'padding:3px 7px;border:1px solid #545969;border-radius:6px;background:#303442;color:inherit;font:inherit;cursor:pointer'
 const listStyle = 'overflow:auto;overscroll-behavior:contain;margin:4px 0;padding:0;list-style:none'
@@ -13,7 +13,7 @@ function button(label, action) {
   return element
 }
 
-export function createVoiceQueues({ settings, saveSettings, previewVoice, stopVoicePreview, positionPanel }) {
+export function createVoiceQueues({ settings, saveSettings, previewVoice, stopVoicePreview, positionPanel, standalone }) {
   let scene = 'start'
   let group = ''
   const menu = document.createElement('details')
@@ -27,12 +27,13 @@ export function createVoiceQueues({ settings, saveSettings, previewVoice, stopVo
   menu.append(heading, editor)
 
   const modes = document.createElement('div')
+  const modeKey = standalone ? 'standaloneVoiceQueueMode' : 'voiceQueueMode'
   modes.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px'
   for (const [mode, label] of [['default', '默认队列'], ['personal', '个人队列']]) {
     const option = button(label, () => {
-      if (settings.voiceQueueMode === mode) return
+      if (settings[modeKey] === mode) return
       stopVoicePreview()
-      settings.voiceQueueMode = mode
+      settings[modeKey] = mode
       queueList.scrollTop = 0
       saveSettings(true)
       refresh()
@@ -43,7 +44,7 @@ export function createVoiceQueues({ settings, saveSettings, previewVoice, stopVo
 
   const scenes = document.createElement('div')
   scenes.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px'
-  for (const [key, label] of Object.entries(VOICE_SCENES)) {
+  for (const [key, label] of Object.entries(standalone ? {} : VOICE_SCENES)) {
     const tab = button(label, () => {
       stopVoicePreview()
       scene = key
@@ -78,7 +79,8 @@ export function createVoiceQueues({ settings, saveSettings, previewVoice, stopVo
   catalog.style.cssText = listStyle + ';max-height:min(270px,34vh)'
 
   function setQueue(ids) {
-    settings.voiceQueues = { ...settings.voiceQueues, [scene]: ids }
+    if (standalone) settings.standaloneVoiceQueue = ids
+    else settings.voiceQueues = { ...settings.voiceQueues, [scene]: ids }
     saveSettings(true)
     refresh()
   }
@@ -93,7 +95,7 @@ export function createVoiceQueues({ settings, saveSettings, previewVoice, stopVo
     name.style.flex = '1'
     name.textContent = id.toUpperCase() + ' · ' + title
     const listen = button('试听', () => { previewVoice(id).catch(() => {}) })
-    const add = button('加入', () => setQueue([...settings.voiceQueues[scene], id]))
+    const add = button('加入', () => setQueue([...(standalone ? settings.standaloneVoiceQueue : settings.voiceQueues[scene]), id]))
     add.dataset.addVoice = id
     controls.append(name, listen, add)
     const text = document.createElement('div')
@@ -111,10 +113,10 @@ export function createVoiceQueues({ settings, saveSettings, previewVoice, stopVo
   }
 
   function refresh() {
-    const personal = settings.voiceQueueMode === 'personal'
-    const ids = getVoiceQueues(settings)[scene]
+    const personal = settings[modeKey] === 'personal'
+    const ids = standalone ? getStandaloneVoiceQueue(settings) : getVoiceQueues(settings)[scene]
     queueTitle.textContent = '当前队列（' + ids.length + '）'
-    for (const option of modes.children) select(option, option.dataset.queueMode === settings.voiceQueueMode)
+    for (const option of modes.children) select(option, option.dataset.queueMode === settings[modeKey])
     for (const tab of scenes.children) select(tab, tab.dataset.scene === scene)
     for (const filter of filters) select(filter, filter.dataset.group === group)
     const queueTop = queueList.scrollTop
@@ -124,7 +126,7 @@ export function createVoiceQueues({ settings, saveSettings, previewVoice, stopVo
       empty.textContent = personal ? '队列为空，可从待选区加入语音。' : '队列为空。'
       queueList.appendChild(empty)
     }
-    for (const [index, id] of ids.entries()) {
+    for (const id of ids) {
       const row = document.createElement('li')
       row.dataset.queuedVoice = id
       row.style.cssText = 'display:flex;align-items:center;gap:4px;padding:2px 0'
@@ -134,19 +136,8 @@ export function createVoiceQueues({ settings, saveSettings, previewVoice, stopVo
       row.appendChild(name)
       queueList.appendChild(row)
       if (!personal) continue
-      function move(offset) {
-        const sorted = [...ids]
-        sorted.splice(index, 1)
-        sorted.splice(index + offset, 0, id)
-        setQueue(sorted)
-        queueList.querySelector('[data-queued-voice="' + id + '"]').scrollIntoView({ block: 'nearest' })
-      }
-      const up = button('上移', () => move(-1))
-      const down = button('下移', () => move(1))
-      up.disabled = index === 0
-      down.disabled = index === ids.length - 1
       const remove = button('移除', () => setQueue(ids.filter((entry) => entry !== id)))
-      row.append(up, down, remove)
+      row.appendChild(remove)
     }
     queueList.scrollTop = queueTop
     let visibleCount = 0

@@ -3,4 +3,5 @@ const { contextBridge, ipcRenderer } = require('electron')
 contextBridge.exposeInMainWorld('closureCompanion', {
   onCursor: (callback) => ipcRenderer.on('closure:cursor', (_event, point) => callback(point)),
   setInteractive: (enabled) => ipcRenderer.send('closure:interactive', enabled === true),
+  setLaunchMode: (mode) => ipcRenderer.invoke('closure:launch-mode', mode),
 })
