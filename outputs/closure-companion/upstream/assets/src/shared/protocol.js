@@ -17,6 +17,8 @@ export const CONFIG_PATH = URL_PREFIX + '/config'
 
 export const SIZE_MIN = 0.6
 export const SIZE_MAX = 2.0
+export const FPS_MIN = 30
+export const FPS_MAX = 60
 export const OPACITY_MIN = 0.3
 export const VOICE_LANGUAGES = Object.freeze({ zh: '中文（普通话）', ja: '日语', en: '英语', ko: '韩语' })
 export const STANDALONE_DEFAULT_VOICES = Object.freeze(Object.keys(dialogue))
@@ -24,6 +26,7 @@ export const STANDALONE_DEFAULT_VOICES = Object.freeze(Object.keys(dialogue))
 export const SETTINGS_DEFAULTS = Object.freeze({
   mirror: 'auto',
   size: 1,
+  fps: FPS_MAX,
   bubble: true,
   opacity: 1,
   sound: true,
@@ -61,6 +64,7 @@ export function normalizeSettings(raw, base) {
   if (raw.mirror === 'auto' || raw.mirror === 'always' || raw.mirror === 'never') out.mirror = raw.mirror
   const size = Number(raw.size)
   if (Number.isFinite(size)) out.size = Math.min(SIZE_MAX, Math.max(SIZE_MIN, size))
+  if (Number.isFinite(raw.fps)) out.fps = Math.min(FPS_MAX, Math.max(FPS_MIN, Math.round(raw.fps)))
   if (typeof raw.bubble === 'boolean') out.bubble = raw.bubble
   const opacity = Number(raw.opacity)
   if (Number.isFinite(opacity)) out.opacity = Math.min(1, Math.max(OPACITY_MIN, opacity))

@@ -96,11 +96,11 @@ import { createState, LOW_QUOTA_NOTICE } from './io/state.js'
     var cssH = Math.round(cssW * (FRAME.h / FRAME.w))
     host.style.width = cssW + 'px'
     host.style.height = cssH + 'px'
-    canvas.width = Math.round(cssW * dpr)
-    canvas.height = Math.round(cssH * dpr)
+    var cw = Math.round(cssW * dpr)
+    var ch = Math.round(cssH * dpr)
+    if (canvas.width !== cw) canvas.width = cw
+    if (canvas.height !== ch) canvas.height = ch
 
-    var cw = canvas.width
-    var ch = canvas.height
     if (pet.mode === 'canvas') {
       // 2D 降级：世界坐标 (x, y) → 画布像素，Y 轴翻转
       var cscale = Math.max(cw / (FRAME.w * FRAMING), ch / (FRAME.h * FRAMING))
@@ -177,27 +177,26 @@ import { createState, LOW_QUOTA_NOTICE } from './io/state.js'
   var playOverlay = director.playOverlay
   var endSegment = director.endSegment
 
-  // 性能：空闲（只有基础层循环）时降到 30fps，有交互/工作动画时保持 60fps。
-  var FPS_IDLE = 30
-  var FPS_ACTIVE = 60
-  var frameAcc = 0
-
-  function isIdleNow() {
-    return director.isIdle() && !(dragApi && dragApi.isDragging())
-  }
+  var frameBudget = 0
+  var animationElapsed = 0
 
   function frame(now) {
     pet.raf = requestAnimationFrame(frame)
-    if (!pet.lastTime) pet.lastTime = now
-    var dt = Math.min((now - pet.lastTime) / 1000, 1 / 30)
+    if (!pet.lastTime) {
+      pet.lastTime = now
+      return
+    }
+    var elapsed = (now - pet.lastTime) / 1000
     pet.lastTime = now
 
-    // 空闲降帧：累积到 1/30 才真正 update+draw 一次（动画速度不变）
-    frameAcc += dt
-    var step = 1 / (isIdleNow() ? FPS_IDLE : FPS_ACTIVE)
-    if (frameAcc < step - 0.002) return
-    dt = frameAcc
-    frameAcc = 0
+    frameBudget += elapsed
+    animationElapsed += Math.min(elapsed, 1 / 30)
+    var step = 1 / settings.fps
+    if (frameBudget < step - 0.001) return
+    // 保留不足一帧的余量，避免高刷屏每次舍入都丢时间。卡顿后仍只画一帧。
+    frameBudget -= Math.max(1, Math.floor(frameBudget / step)) * step
+    var dt = animationElapsed
+    animationElapsed = 0
 
     pet.state.update(dt)
     // 思考循环：手动推相位（entry.timeScale 已置 0，update 不会自己走）
@@ -271,15 +270,21 @@ import { createState, LOW_QUOTA_NOTICE } from './io/state.js'
   }
 
   function start() {
-    pet.raf = requestAnimationFrame(frame)
+    resume()
     host.style.opacity = '1'
     window.__dshClosurePet.phase = 'running'
+  }
+
+  function resume() {
+    if (!pet.raf && !document.hidden) pet.raf = requestAnimationFrame(frame)
   }
 
   function stop() {
     if (pet.raf) cancelAnimationFrame(pet.raf)
     pet.raf = 0
     pet.lastTime = 0
+    frameBudget = 0
+    animationElapsed = 0
   }
 
   // 页面卸载 / 客户端插件销毁时调用：撤掉监听、定时器与 DOM，可重复调用。
@@ -329,9 +334,7 @@ import { createState, LOW_QUOTA_NOTICE } from './io/state.js'
       stop()
       if (!standalone) setPollInterval(5000)
     } else {
-      pet.lastTime = 0
-      frameAcc = 0
-      pet.raf = requestAnimationFrame(frame)
+      resume()
       if (startupPending && startupPending.companion && !startupTimer) {
         startupTimer = setTimeout(runStartup, STARTUP_DELAY)
       }
@@ -666,7 +669,7 @@ import { createState, LOW_QUOTA_NOTICE } from './io/state.js'
           return { name: name, time: time }
         },
         dispose: dispose,
-        resume: function () { pet.lastTime = 0; if (!pet.raf) pet.raf = requestAnimationFrame(frame) },
+        resume: resume,
         get lastState() { return stateApi ? stateApi.getState() : null },
         get animation() {
           var cur = pet.state && pet.state.getCurrent(0)

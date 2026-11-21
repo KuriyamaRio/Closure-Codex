@@ -26,7 +26,7 @@ var saveTimer = 0
 export function saveSettings(immediate) {
   try {
     localStorage.setItem(SETTINGS_KEY, JSON.stringify({
-      mirror: settings.mirror, size: settings.size,
+      mirror: settings.mirror, size: settings.size, fps: settings.fps,
       bubble: settings.bubble, opacity: settings.opacity,
       sound: settings.sound, volume: settings.volume,
       voice: settings.voice, voiceLanguage: settings.voiceLanguage, voiceVolume: settings.voiceVolume,

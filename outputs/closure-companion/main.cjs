@@ -227,6 +227,7 @@ function managePetWindow(win) {
 
 function registerInput(win) {
   let interactive = false
+  let timer
   win.setIgnoreMouseEvents(true)
   ipcMain.on('closure:interactive', (event, enabled) => {
     if (win.isDestroyed() || event.sender !== win.webContents || enabled === interactive) return
@@ -237,13 +238,23 @@ function registerInput(win) {
     interactive = false
     win.setIgnoreMouseEvents(true)
   })
-  const timer = setInterval(() => {
+  function pollCursor() {
     if (win.isDestroyed() || !win.isVisible()) return
     const pointer = screen.getCursorScreenPoint()
     const bounds = win.getContentBounds()
     win.webContents.send('closure:cursor', { x: pointer.x - bounds.x, y: pointer.y - bounds.y })
-  }, 24)
-  win.once('closed', () => clearInterval(timer))
+  }
+  function stopPolling() {
+    clearInterval(timer)
+    timer = undefined
+  }
+  win.on('show', () => {
+    if (timer) return
+    pollCursor()
+    timer = setInterval(pollCursor, 24)
+  })
+  win.on('hide', stopPolling)
+  win.once('closed', stopPolling)
 }
 
 async function runSmoke(win) {
@@ -323,13 +334,21 @@ async function runSmoke(win) {
     document.dispatchEvent(new MouseEvent('contextmenu', { clientX: point.x, clientY: point.y, cancelable: true }))
     const settings = document.querySelector('#dsh-closure-pet-settings')
     const panelOpened = getComputedStyle(settings).display === 'block'
+    const getSavedSettings = () => JSON.parse(localStorage.getItem('dshcl-settings'))
+    const fpsSlider = settings.querySelector('input[type="range"][aria-label="帧率"]')
+    const { normalizeSettings } = await import('/dsh-closure/assets/src/shared/protocol.js')
+    const fpsRange = fpsSlider.min === '30' && fpsSlider.max === '60' && fpsSlider.step === '1' &&
+      fpsSlider.value === '60' && normalizeSettings({ size: 1 }).fps === 60 &&
+      normalizeSettings({ fps: 10 }).fps === 30 && normalizeSettings({ fps: 90 }).fps === 60
+    fpsSlider.value = '45'
+    fpsSlider.dispatchEvent(new Event('input', { bubbles: true }))
+    const fpsSliderWorks = fpsRange && fpsSlider.nextElementSibling.textContent === '45 FPS' && getSavedSettings().fps === 45
     const notification = [...settings.querySelectorAll('details')].find((item) => item.querySelector('summary').textContent === '提醒与播报')
     notification.open = true
     const quotaOption = notification.querySelector('button[data-minutes="0"]')
     quotaOption.click()
     const toolNotice = notification.querySelector('input[type=checkbox]')
     toolNotice.click()
-    const getSavedSettings = () => JSON.parse(localStorage.getItem('dshcl-settings'))
     const notificationsSaved = quotaOption.getAttribute('aria-pressed') === 'true' &&
       getSavedSettings().quotaReminderMinutes === 0 && !getSavedSettings().toolFailureNotice
 
@@ -593,7 +612,7 @@ async function runSmoke(win) {
       Date.now = now
     }
     defaultMode.click()
-    return { dragged, clicked, panelOpened, notificationsSaved, defaultQueues, defaultOverridesPersonal, queueEditor, voiceSettings, voiceVolumeWorks,
+    return { dragged, clicked, panelOpened, fpsSliderWorks, notificationsSaved, defaultQueues, defaultOverridesPersonal, queueEditor, voiceSettings, voiceVolumeWorks,
       startVoice, clickKeepsDialogue, startRotates, expressionPreview, crtSettingsSaved, startupScheduled,
       workingDialogue, workingOnlyOnce, completionDialogue, failedTurnSkipsCompletion, idleDialogue, idleOnlyOnce,
       startupDialogue, noQuotaOnClick, automaticQuota, noQuotaSticker, clickSharesWorkingQueue, interactionRotates,
@@ -607,20 +626,21 @@ async function runSmoke(win) {
   if (preview.isEmpty()) throw new Error('Spine render is empty.')
   if (process.env.CLOSURE_SMOKE_PNG) await writeFile(process.env.CLOSURE_SMOKE_PNG, preview.toPNG())
   await win.loadURL(win.webContents.getURL())
-  const queuesReloaded = await evaluate(`(async () => {
+  const reloaded = await evaluate(`(async () => {
     const { settings } = await import('/dsh-closure/assets/src/core/settings.js')
     const { getVoiceQueues, normalizeSettings } = await import('/dsh-closure/assets/src/shared/protocol.js')
     const queues = settings.voiceQueues
     const oldProfile = normalizeSettings({ voiceQueues: { start: [] } })
-    return queues.start.join() === 'a18,a19' && queues.working.join() === 'a23,a34' &&
+    const queuesReloaded = queues.start.join() === 'a18,a19' && queues.working.join() === 'a23,a34' &&
       queues.completion.join() === 'a30' && queues.startup.join() === 'b01' && queues.idle.join() === 'b03' &&
       queues.toolFailure.length === 0 && settings.voiceQueueMode === 'default' &&
       getVoiceQueues(settings).start.join() === 'a18,a19,a21,a23,a24' &&
       getVoiceQueues(settings).toolFailure.join() === 'a31,a32' &&
       Object.values(oldProfile.voiceQueues).every((queue) => queue.length === 0) && getVoiceQueues(oldProfile).start[0] === 'a18'
+    return { queuesReloaded, fpsReloaded: settings.fps === 45 }
   })()`)
-  if (!queuesReloaded) throw new Error('Voice queues did not survive reload.')
-  console.log(JSON.stringify({ ...result, queuesReloaded }))
+  if (!Object.values(reloaded).every(Boolean)) throw new Error(`Settings did not survive reload: ${JSON.stringify(reloaded)}`)
+  console.log(JSON.stringify({ ...result, ...reloaded }))
 }
 
 if (!smoke && !app.requestSingleInstanceLock()) {
@@ -646,6 +666,7 @@ if (!smoke && !app.requestSingleInstanceLock()) {
     session.defaultSession.webRequest.onBeforeRequest((details, callback) => callback({ cancel: new URL(details.url).protocol !== `${scheme}:` }))
     const win = new BrowserWindow({
       width: 900, height: 620, frame: demo, transparent: !demo, show: false,
+      paintWhenInitiallyHidden: dev,
       resizable: demo, alwaysOnTop: !dev, focusable: dev, skipTaskbar: !demo, hasShadow: false,
       backgroundColor: demo ? '#151424' : '#00000000',
       title: '可露希尔 · Codex 桌宠',

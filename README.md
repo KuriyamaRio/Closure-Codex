@@ -2,18 +2,18 @@
 
 把《明日方舟》的可露希尔带到 Windows 桌面。桌宠可随 Codex 工作，也可独立运行，内置 57 条游戏原声，支持自定义语音队列和随机轮换。项目还提供 Codex 深浅主题与 CRT 覆盖效果。
 
-本指南对应 `v0.4.0`。 [更新日志](CHANGELOG.md)
+本指南对应 `v0.5.0`。 [更新日志](CHANGELOG.md)
 
 ## 下载与安装
 
 1. 确认电脑使用 Windows x64，并已安装 Microsoft Store 版 Codex。
-2. 从发布页的 Assets 下载 `Closure-Codex-v0.4.0-win-x64.zip`。包内已附带 Electron 运行时。 [v0.4.0 发布页](https://github.com/OndoP3901/Closure-Codex/releases/tag/v0.4.0) · [直接下载安装包](https://github.com/OndoP3901/Closure-Codex/releases/download/v0.4.0/Closure-Codex-v0.4.0-win-x64.zip)
+2. 从发布页的 Assets 下载 `Closure-Codex-v0.5.0-win-x64.zip`。包内已附带 Electron 运行时。 [v0.5.0 发布页](https://github.com/OndoP3901/Closure-Codex/releases/tag/v0.5.0) · [直接下载安装包](https://github.com/OndoP3901/Closure-Codex/releases/download/v0.5.0/Closure-Codex-v0.5.0-win-x64.zip)
 3. 完整解压到你想长期保留的位置，然后双击解压目录里的 `Install.cmd`。
 4. 用原来的 Codex 图标打开客户端。已打开时，切回 Codex 即可。首次使用时，桌宠和 CRT 随 Codex 主窗口启动和退出，联动模式下隐藏托盘图标。需要更换配色时，继续执行下方的主题导入步骤。
 
 ### 升级与卸载
 
-- 升级时将新版解压到新目录，再从新目录运行 `Install.cmd`，启动项会切换到新版。要沿用运行模式、个人语音队列和 CRT 设置，可在安装前把旧目录里的 `work/companion-profile` 和 `work/crt-settings.ini` 复制到新版对应位置。
+- 升级时将新版解压到新目录，再从新目录运行 `Install.cmd`，启动项会切换到新版。要沿用运行模式、可见动画帧率、个人语音队列和 CRT 设置，可在安装前把旧目录里的 `work/companion-profile` 和 `work/crt-settings.ini` 复制到新版对应位置。
 - 卸载时在当前启用的安装目录双击 `Uninstall.cmd`，停止桌宠与 CRT 并移除 Windows 登录启动项。已导入的主题可在 Codex 的外观设置里换回。移动安装目录后，从新位置重新运行 `Install.cmd`。
 
 ## 导入主题
@@ -39,6 +39,7 @@
 | --- | --- |
 | 运行模式 | 点击当前模式即可切换。详见下方「切换运行模式」。 |
 | 镜像、大小、透明度、气泡 | 按需调整显示效果。点「重置位置」可恢复桌宠的默认位置。 |
+| 帧率 | 拖动「大小」下方的滑条，在 30–60 FPS 之间以 1 FPS 为步长调节。两种运行模式的待机、互动和工作动画均使用所选帧率，默认 60 FPS。调整即时生效，重启后保留。 |
 | 配音语言、配音音量、音效 | 切换普通话、日语、英语或韩语，字幕保持简体中文。角色配音和 UI 音效可以分别开关和调节音量。 |
 | 语音队列 | 查看各场景的默认队列，或切换到个人队列试听和编辑。 |
 | 预览表情 | 预览哭脸、庆祝、思考等动画。 |
@@ -99,10 +100,10 @@
 下载 [Electron 45.4.1 Windows x64](https://github.com/electron/electron/releases/download/v45.4.1/electron-v45.4.1-win32-x64.zip)，在仓库根目录运行以下命令。构建脚本会校验官方 Electron 压缩包的 SHA-256，并在 `dist` 生成安装包和校验文件。
 
 ```powershell
-& .\Build-Release.ps1 -Version 0.4.0 -ElectronZip 'C:\Downloads\electron-v45.4.1-win32-x64.zip'
+& .\Build-Release.ps1 -Version 0.5.0 -ElectronZip 'C:\Downloads\electron-v45.4.1-win32-x64.zip'
 ```
 
-上述命令生成 `dist/Closure-Codex-v0.4.0-win-x64.zip` 和 `dist/SHA256SUMS.txt`，安装包内附本指南和更新日志。
+上述命令生成 `dist/Closure-Codex-v0.5.0-win-x64.zip` 和 `dist/SHA256SUMS.txt`，安装包内附本指南和更新日志。
 
 ## 来源与许可
 

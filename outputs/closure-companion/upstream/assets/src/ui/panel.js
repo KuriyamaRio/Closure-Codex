@@ -5,7 +5,7 @@
 // 面板 DOM 懒创建（第一次 open 时），关闭只是 display:none。
 
 import { PREFIX, SIZE_MIN, SIZE_MAX } from '../core/env.js'
-import { VOICE_LANGUAGES } from '../shared/protocol.js'
+import { FPS_MIN, FPS_MAX, VOICE_LANGUAGES } from '../shared/protocol.js'
 import { createVoiceQueues } from './voice-queues.js'
 
 export function createPanel(deps) {
@@ -125,6 +125,31 @@ export function createPanel(deps) {
     sizeWrap.appendChild(slider)
     sizeWrap.appendChild(sizeText)
     sizeRow.appendChild(sizeWrap)
+
+    const fpsRow = row('帧率')
+    const fpsWrap = document.createElement('span')
+    fpsWrap.style.cssText = 'display:inline-flex;align-items:center;gap:8px'
+    const fpsSlider = document.createElement('input')
+    fpsSlider.type = 'range'
+    fpsSlider.min = String(FPS_MIN)
+    fpsSlider.max = String(FPS_MAX)
+    fpsSlider.step = '1'
+    fpsSlider.setAttribute('aria-label', '帧率')
+    fpsSlider.style.cssText = 'width:96px;accent-color:#7d86ff;cursor:pointer'
+    const fpsText = document.createElement('span')
+    fpsText.style.cssText = 'width:42px;text-align:right;color:#cfd6e6'
+    function syncFps() {
+      fpsSlider.value = String(settings.fps)
+      fpsText.textContent = settings.fps + ' FPS'
+      fpsSlider.setAttribute('aria-valuetext', fpsText.textContent)
+    }
+    fpsSlider.addEventListener('input', function () {
+      settings.fps = fpsSlider.valueAsNumber
+      syncFps()
+      saveSettings(false)
+    })
+    fpsWrap.append(fpsSlider, fpsText)
+    fpsRow.appendChild(fpsWrap)
 
     // 气泡开关
     var bubbleRow = row('气泡')
@@ -440,7 +465,7 @@ export function createPanel(deps) {
 
     document.body.appendChild(panel)
     syncMirrorButtons()
-    return { syncMirrorButtons, slider, sizeText, voiceQueues }
+    return { syncMirrorButtons, slider, sizeText, syncFps, voiceQueues }
   }
 
   var panelApi = null
@@ -449,6 +474,7 @@ export function createPanel(deps) {
     if (panelApi) {
       panelApi.slider.value = String(settings.size)
       panelApi.sizeText.textContent = Math.round(settings.size * 100) + '%'
+      panelApi.syncFps()
       panelApi.syncMirrorButtons()
     }
     panel.style.display = 'block'

@@ -239,8 +239,8 @@ export function createState(deps) {
         if (isFinite(Number(s.opacity))) settings.opacity = Math.min(1, Math.max(0.3, Number(s.opacity)))
         if (typeof s.sound === 'boolean') settings.sound = s.sound
         if (isFinite(Number(s.volume))) settings.volume = Math.min(1, Math.max(0, Number(s.volume)))
-        const { voiceQueueMode, voiceQueues } = normalizeSettings(s, settings)
-        Object.assign(settings, { voiceQueueMode, voiceQueues })
+        const { fps, voiceQueueMode, voiceQueues } = normalizeSettings(s, settings)
+        Object.assign(settings, { fps, voiceQueueMode, voiceQueues })
         layout()
         repositionForAnchor()
         resolveFlip()
